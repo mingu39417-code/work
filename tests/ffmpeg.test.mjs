@@ -48,7 +48,8 @@ test('matrix / range selection never leaves swscale guessing', () => {
 test('filters: explicit matrices, never upscale, even sizes for H.264', () => {
   const v = videoScaleFilter({ space: 'bt709', range: 'tv' }, 1920);
   assert.match(v, /in_color_matrix=bt709:in_range=tv:out_color_matrix=bt709:out_range=tv,format=yuv420p$/);
-  assert.match(v, /w='trunc\(min\(1920,iw\)\/2\)\*2':h=-2/);
+  // long edge capped (vertical masters too), aspect kept, even dimensions
+  assert.match(v, /w='min\(1920,iw\)':h='min\(1920,ih\)':force_original_aspect_ratio=decrease:force_divisible_by=2/);
   const pc = videoScaleFilter({ space: 'bt709', range: 'pc' }, 960);
   assert.match(pc, /in_range=pc:out_color_matrix=bt709:out_range=tv/);
   const rgb = videoScaleFilter({ isRgb: true }, 1920);
@@ -62,11 +63,21 @@ test('filters: explicit matrices, never upscale, even sizes for H.264', () => {
   assert.match(m, /in_color_matrix=bt709:in_range=tv,format=rgb24$/);
   const exact = rgbMasterFilter({ isRgb: true }, { size: { w: 1000, h: 500 } });
   assert.match(exact, /scale=w=1000:h=500:/);
+  // exact size with another aspect ratio: cover + center crop, never a stretch
+  const cover = rgbMasterFilter({ isRgb: true, storedW: 1920, storedH: 1080, w: 1920, h: 1080 }, { size: { w: 1920, h: 804 } });
+  assert.match(cover, /scale=w=1920:h=1080:.*,format=rgb24,crop=1920:804,setsar=1$/);
+  // letterbox crop comes first, before any scaling
+  const lb = videoScaleFilter({ space: 'bt709', range: 'tv', storedW: 1920, storedH: 1080 }, 960, { crop: { w: 1920, h: 804, x: 0, y: 138 } });
+  assert.match(lb, /^crop=1920:804:0:138,scale=/);
   assert.match(jpegFromRgbFilter(1920), /out_color_matrix=bt601:out_range=pc,format=yuvj420p/);
   assert.match(webpFromRgbFilter(960), /format=bgra$/);
   const x = x264Args({ crf: 20, preset: 'slow' }).join(' ');
   assert.match(x, /-profile:v high/);
   assert.match(x, /-color_primaries bt709 -color_trc bt709 -colorspace bt709 -color_range tv/);
+  assert.doesNotMatch(x, /-maxrate|-level/);
+  const capped = x264Args({ crf: 20, preset: 'slow', level: '4.1', maxrate: '12M', bufsize: '24M' }).join(' ');
+  assert.match(capped, /-level:v 4\.1 -maxrate 12M -bufsize 24M/);
+  assert.match(jpegFromRgbFilter(1920), /h='min\(1920,ih\)':force_original_aspect_ratio=decrease/);
 });
 
 test('default poster time: 30% of duration, max 20 s', () => {

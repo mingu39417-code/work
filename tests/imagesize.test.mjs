@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { imageSize, imageSizeFromBuffer } from '../tools/lib/imagesize.mjs';
-import { fakeJpeg, fakePng, fakeWebp, tmpDir, write, hasFfmpeg } from './helpers.mjs';
+import { fakeJpeg, fakePng, fakeWebp, tmpDir, write, hasFfmpeg, FFMPEG } from './helpers.mjs';
 
 test('PNG / JPEG / WebP(VP8X) headers', () => {
   assert.deepEqual(imageSizeFromBuffer(fakePng(1920, 1080)), { w: 1920, h: 1080, type: 'png' });
@@ -31,7 +31,7 @@ test('real files encoded by ffmpeg (lossy VP8, lossless VP8L, progressive JPEG)'
   ];
   for (const [name, args, w, h] of cases) {
     const out = path.join(dir, name);
-    const r = spawnSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360', '-frames:v', '1', '-vf', `scale=${w}:${h},format=rgb24`, ...args, out]);
+    const r = spawnSync(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=640x360', '-frames:v', '1', '-vf', `scale=${w}:${h},format=rgb24`, ...args, out]);
     assert.equal(r.status, 0, r.stderr?.toString());
     const got = await imageSize(out);
     assert.equal(got.w, w, name);

@@ -68,8 +68,11 @@ test('work meta: og.jpg, video.other when playable, relative-with-root without s
   const wm = withUrl(w, mediaFor('a', { main: true }));
   const m = buildMeta({ site: s0, kind: 'work', work: wm, root: '../../' });
   assert.equal(m.ogImage, '../../media/works/a/og.jpg');
+  assert.deepEqual([m.ogImageWidth, m.ogImageHeight, m.ogImageType], [1200, 630, 'image/jpeg']);
   assert.equal(m.ogType, 'video.other');
-  assert.equal(m.description, '한 줄 요약');
+  // search snippet: summary + category/role/brand context; share cards keep the bare summary
+  assert.equal(m.description, '한 줄 요약 — 광고 컬러 그레이딩 · TONECRAFT 컬러리스트 임민규');
+  assert.equal(m.ogDescription, '한 줄 요약');
   assert.equal(m.ogImageAlt, '광고 A 컬러 그레이딩 장면');
   assert.match(m.title, /^광고 A — 컬러 그레이딩 \| TONECRAFT$/);
   const s1 = site({ siteUrl: 'https://tonecraft.kr' });
@@ -79,18 +82,22 @@ test('work meta: og.jpg, video.other when playable, relative-with-root without s
   assert.equal(m1.ogType, 'website');
 });
 
-test('home JSON-LD: ProfessionalService + WebSite; url/@id only with siteUrl', () => {
+test('home JSON-LD: Organization (LocalBusiness only with an address) + WebSite; url/@id only with siteUrl', () => {
   const [biz0, web0] = homeJsonLd(site());
-  assert.equal(biz0['@type'], 'ProfessionalService');
+  assert.equal(biz0['@type'], 'Organization');
   assert.equal(biz0.url, undefined);
   assert.equal(biz0['@id'], undefined);
   assert.equal(biz0.email, 'crafttone3@gmail.com');
   assert.deepEqual(biz0.founder, { '@type': 'Person', name: '임민규', jobTitle: '컬러리스트' });
   assert.equal(biz0.areaServed, undefined, 'no service-area claim that content/site.mjs does not make');
   assert.deepEqual(biz0.knowsAbout, ['컬러 그레이딩']);
-  assert.deepEqual(biz0.serviceType, ['컬러 그레이딩']);
+  assert.equal(biz0.serviceType, undefined, 'serviceType exists only on schema.org Service');
   assert.equal(web0['@type'], 'WebSite');
   assert.equal(web0.url, undefined);
+  assert.deepEqual(web0.publisher, { '@type': 'Organization', name: 'TONECRAFT' });
+  const [local] = homeJsonLd(site({ business: { address: '서울시 어딘가 1' } }));
+  assert.equal(local['@type'], 'LocalBusiness');
+  assert.equal(local.address.streetAddress, '서울시 어딘가 1');
   const [biz1, web1] = homeJsonLd(site({ siteUrl: 'https://tonecraft.kr', contact: { email: 'crafttone3@gmail.com', kmongUrl: 'https://kmong.com/gig/1' } }));
   assert.equal(biz1.url, 'https://tonecraft.kr/');
   assert.equal(biz1.image, 'https://tonecraft.kr/assets/img/og-default.jpg');
@@ -104,7 +111,7 @@ test('work JSON-LD: VideoObject only with siteUrl + video + date; else CreativeW
   const [w] = works(s1, [{ slug: 'a', title: 'A', category: 'film', date: '2026-03-02', client: '클라이언트' }]);
   const [vo, bc] = workJsonLd(s1, withUrl(w, mediaFor('a', { main: true })));
   assert.equal(vo['@type'], 'VideoObject');
-  assert.equal(vo.uploadDate, '2026-03-02');
+  assert.equal(vo.uploadDate, '2026-03-02T00:00:00+09:00');
   assert.equal(vo.duration, 'PT1M23S');
   assert.equal(vo.contentUrl, 'https://tonecraft.kr/media/works/a/main.mp4');
   assert.deepEqual(vo.thumbnailUrl, ['https://tonecraft.kr/media/works/a/og.jpg', 'https://tonecraft.kr/media/works/a/poster.jpg']);
@@ -118,7 +125,7 @@ test('work JSON-LD: VideoObject only with siteUrl + video + date; else CreativeW
   const [w2] = works(s1, [{ slug: 'b', title: 'B', category: 'film', year: 2024, video: { type: 'vimeo', id: '42' } }]);
   const [vo2] = workJsonLd(s1, withUrl(w2, { ...mediaFor('b'), main: null, embed: w2.video }));
   assert.equal(vo2.embedUrl, 'https://player.vimeo.com/video/42');
-  assert.equal(vo2.uploadDate, '2024-01-01');
+  assert.equal(vo2.uploadDate, '2024-01-01T00:00:00+09:00');
   assert.equal(vo2.contentUrl, undefined);
   assert.equal(vo2.duration, undefined);
 
@@ -220,4 +227,33 @@ test('view models: categories with counts, prev/next relative urls, 404 root', (
   const nf2 = buildViewModels({ site: site(), works: [], reel, build }).notFound;
   assert.equal(nf2.paths.root, '/');
   assert.deepEqual(categoriesWithCounts(s, []), []);
+});
+
+test('og:image size/type: og.jpg 1200×630, poster fallback, default image size measured by the build', () => {
+  const s = site({ siteUrl: 'https://tonecraft.kr' });
+  let m = buildMeta({ site: s, kind: 'home' });
+  assert.deepEqual([m.ogImageWidth, m.ogImageHeight, m.ogImageType], [null, null, 'image/jpeg']);
+  s.seo.ogImageSize = { w: 1200, h: 630 }; // set by buildSite from the file
+  m = buildMeta({ site: s, kind: 'home' });
+  assert.deepEqual([m.ogImageWidth, m.ogImageHeight], [1200, 630]);
+  assert.equal(buildMeta({ site: s, kind: '404', root: 'https://tonecraft.kr/' }).ogImageWidth, 1200);
+  const [w] = works(s, [{ slug: 'a', title: 'A', category: 'film' }]);
+  const noOg = withUrl(w, { ...mediaFor('a'), og: null });
+  m = buildMeta({ site: s, kind: 'work', work: noOg, root: '../../' });
+  assert.equal(m.ogImage, 'https://tonecraft.kr/media/works/a/poster.jpg');
+  assert.deepEqual([m.ogImageWidth, m.ogImageHeight], [1920, 1080]);
+  m = buildMeta({ site: s, kind: 'work', work: withUrl(w, { ...mediaFor('a'), og: null, poster: null }), root: '../../' });
+  assert.deepEqual([m.ogImage, m.ogImageWidth], ['https://tonecraft.kr/assets/img/og-default.jpg', 1200]);
+});
+
+test('work description: summary + client/category/role/brand context, clipped; og description stays the summary', () => {
+  const s = site();
+  const [w] = works(s, [{ slug: 'a', title: 'A', category: 'commercial', client: '브랜드X', summary: '노을빛 하이라이트의 광고 룩' }]);
+  const m = buildMeta({ site: s, kind: 'work', work: withUrl(w, mediaFor('a')) });
+  assert.equal(m.description, '노을빛 하이라이트의 광고 룩 — 브랜드X 광고 컬러 그레이딩 · TONECRAFT 컬러리스트 임민규');
+  assert.equal(m.ogDescription, '노을빛 하이라이트의 광고 룩');
+  const [long] = works(s, [{ slug: 'b', title: 'B', category: 'film', summary: '가'.repeat(300) }]);
+  const d = buildMeta({ site: s, kind: 'work', work: withUrl(long, mediaFor('b')) }).description;
+  assert.ok(d.length <= 125, `${d.length}`);
+  assert.ok(d.endsWith('TONECRAFT 컬러리스트 임민규'));
 });

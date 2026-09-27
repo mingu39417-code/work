@@ -1,5 +1,5 @@
 // Document shell shared by every page: <head>, header/nav, footer, video dialog, toast, preview banner.
-import { esc, attrs, arr, filled, externalAttrs, jsonLdScript, tidy } from './util.mjs';
+import { esc, attrs, arr, filled, int, externalAttrs, jsonLdScript, tidy } from './util.mjs';
 import { icons, brandMark } from './icons.mjs';
 
 const BUSINESS_LABELS = [
@@ -33,14 +33,24 @@ function headMeta(vm) {
   lines.push(`<meta property="og:type"${attrs({ content: meta.ogType || 'website' })}>`);
   if (filled(meta.siteName)) lines.push(`<meta property="og:site_name"${attrs({ content: meta.siteName })}>`);
   lines.push(`<meta property="og:title"${attrs({ content: meta.title })}>`);
-  if (filled(meta.description)) lines.push(`<meta property="og:description"${attrs({ content: meta.description })}>`);
+  // og:description is the shorter card text (work summary); the meta description above is the longer search snippet.
+  const ogDescription = filled(meta.ogDescription) ? meta.ogDescription : meta.description;
+  if (filled(ogDescription)) lines.push(`<meta property="og:description"${attrs({ content: ogDescription })}>`);
   if (filled(meta.ogUrl)) lines.push(`<meta property="og:url"${attrs({ content: meta.ogUrl })}>`);
   if (filled(meta.ogImage)) {
     lines.push(`<meta property="og:image"${attrs({ content: meta.ogImage })}>`);
+    // dimensions let KakaoTalk / Facebook lay out the card before fetching the image (set by the build when known)
+    if (int(meta.ogImageWidth) && int(meta.ogImageHeight)) {
+      lines.push(`<meta property="og:image:width"${attrs({ content: int(meta.ogImageWidth) })}>`);
+      lines.push(`<meta property="og:image:height"${attrs({ content: int(meta.ogImageHeight) })}>`);
+    }
+    if (filled(meta.ogImageType)) lines.push(`<meta property="og:image:type"${attrs({ content: meta.ogImageType })}>`);
     if (filled(meta.ogImageAlt)) lines.push(`<meta property="og:image:alt"${attrs({ content: meta.ogImageAlt })}>`);
   }
   lines.push(`<meta property="og:locale"${attrs({ content: meta.locale || 'ko_KR' })}>`);
   lines.push('<meta name="twitter:card" content="summary_large_image">');
+  // X/Twitter ignores og:image:alt
+  if (filled(meta.ogImage) && filled(meta.ogImageAlt)) lines.push(`<meta name="twitter:image:alt"${attrs({ content: meta.ogImageAlt })}>`);
 
   if (filled(seo.googleVerification)) lines.push(`<meta name="google-site-verification"${attrs({ content: seo.googleVerification })}>`);
   if (filled(seo.naverVerification)) lines.push(`<meta name="naver-site-verification"${attrs({ content: seo.naverVerification })}>`);
@@ -138,13 +148,13 @@ export function footer(vm) {
     </div>
     <div class="site-footer__grid">
       <div class="site-footer__col site-footer__col--contact">
-        <p class="label">CONTACT</p>
+        <p class="label" lang="en">CONTACT</p>
         ${contactLinks(vm, { variant: 'footer' })}
         ${kmong ? `<div class="site-footer__kmong">${kmong}</div>` : ''}
         ${filled(contact.responseNote) ? `<p class="site-footer__note">${esc(contact.responseNote)}</p>` : ''}
       </div>
-      ${navItems ? `<nav class="site-footer__col site-footer__nav" aria-label="바닥글 메뉴"><p class="label">MENU</p><ul>${navItems}</ul></nav>` : ''}
-      ${bizLines.length ? `<div class="site-footer__col"><p class="label">BUSINESS</p><dl class="footer-biz">${bizLines.join('')}</dl></div>` : ''}
+      ${navItems ? `<nav class="site-footer__col site-footer__nav" aria-label="바닥글 메뉴"><p class="label" lang="en">MENU</p><ul>${navItems}</ul></nav>` : ''}
+      ${bizLines.length ? `<div class="site-footer__col"><p class="label" lang="en">BUSINESS</p><dl class="footer-biz">${bizLines.join('')}</dl></div>` : ''}
     </div>
     <div class="site-footer__bottom">
       <p class="site-footer__copy">© ${esc(year)} ${esc(brand.name || 'TONECRAFT')} · ${esc(brand.person || '')}</p>
@@ -166,7 +176,7 @@ export function videoDialog() {
 
 function previewBanner(vm) {
   if (!vm.build?.preview) return '';
-  return '<aside class="preview-banner" aria-label="미리보기 빌드 안내"><span class="preview-banner__dot" aria-hidden="true"></span>PREVIEW · <span class="preview-banner__ko">비공개 작업 포함 — 배포용 아님</span></aside>';
+  return '<aside class="preview-banner" aria-label="미리보기 빌드 안내"><span class="preview-banner__dot" aria-hidden="true"></span><span lang="en">PREVIEW</span> · <span class="preview-banner__ko">비공개 작업 포함 — 배포용 아님</span></aside>';
 }
 
 /**

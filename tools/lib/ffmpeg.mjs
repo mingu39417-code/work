@@ -43,8 +43,10 @@ export const FFMPEG_HELP = [
   '  Windows : 터미널(PowerShell)에서  winget install Gyan.FFmpeg  실행 후, 터미널을 닫았다가 다시 여세요.',
   '  macOS   : brew install ffmpeg   (Homebrew가 없다면 https://brew.sh 참고)',
   '',
-  '설치했는데도 안 되면 경로를 직접 지정할 수 있습니다:',
-  '  FFMPEG_PATH=C:\\ffmpeg\\bin\\ffmpeg.exe  FFPROBE_PATH=C:\\ffmpeg\\bin\\ffprobe.exe',
+  '설치했는데도 안 되면 경로를 직접 지정할 수 있습니다 (사용하는 터미널에 맞는 줄을 쓰세요):',
+  '  PowerShell : $env:FFMPEG_PATH="C:\\ffmpeg\\bin\\ffmpeg.exe"; $env:FFPROBE_PATH="C:\\ffmpeg\\bin\\ffprobe.exe"; npm run media',
+  '  명령 프롬프트(cmd) : set "FFMPEG_PATH=C:\\ffmpeg\\bin\\ffmpeg.exe" && set "FFPROBE_PATH=C:\\ffmpeg\\bin\\ffprobe.exe" && npm run media',
+  '  macOS 터미널 : FFMPEG_PATH=/opt/homebrew/bin/ffmpeg FFPROBE_PATH=/opt/homebrew/bin/ffprobe npm run media',
 ].join('\n');
 
 // ---------------------------------------------------------------------------------------------
@@ -88,8 +90,11 @@ export function runFfmpeg(bin, args, { duration = 0, onProgress, signal, cwd } =
   });
 }
 
-/** Run a binary and collect stdout as a Buffer. */
-export function runCapture(bin, args) {
+/**
+ * Run a binary and collect stdout (Buffer) and stderr (text, last 200 KB — ffmpeg filters such as cropdetect
+ * report on stderr at -loglevel info).
+ */
+export function runCaptureAll(bin, args) {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const chunks = [];
@@ -97,23 +102,35 @@ export function runCapture(bin, args) {
     child.stdout.on('data', (d) => chunks.push(d));
     child.stderr.on('data', (d) => {
       stderr += d;
-      if (stderr.length > 20000) stderr = stderr.slice(-20000);
+      if (stderr.length > 200000) stderr = stderr.slice(-200000);
     });
     child.on('error', (err) => reject(new FfmpegError(`${path.basename(bin)} 실행 실패: ${err.message}`)));
     child.on('close', (code) => {
-      if (code === 0) resolve(Buffer.concat(chunks));
+      if (code === 0) resolve({ stdout: Buffer.concat(chunks), stderr });
       else reject(new FfmpegError(`${path.basename(bin)} 오류 (코드 ${code}): ${stderr.trim().split('\n').slice(-4).join('\n')}`));
     });
   });
 }
 
+/** Run a binary and collect stdout as a Buffer. */
+export async function runCapture(bin, args) {
+  return (await runCaptureAll(bin, args)).stdout;
+}
+
+/**
+ * Input options for a still image. The image2 demuxer reads '%d' / '%03d' in a path as a sequence pattern, so a
+ * still named 'shot_%03d.png' (or a project folder like '100%done') would "not exist"; `-pattern_type none` needs
+ * `-f image2` alongside (a bare .png is otherwise probed as png_pipe, which has no such option).
+ */
+export const IMAGE_INPUT = ['-f', 'image2', '-pattern_type', 'none'];
+
 // ---------------------------------------------------------------------------------------------
 // probing
 
-export async function probe(ffprobe, file) {
+export async function probe(ffprobe, file, { image = false } = {}) {
   let out;
   try {
-    out = await runCapture(ffprobe, ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', file]);
+    out = await runCapture(ffprobe, ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', ...(image ? IMAGE_INPUT : []), file]);
   } catch (err) {
     const detail = String(err.message).split('\n').pop().replace(/^.*?:\s*/, '').trim();
     throw new FfmpegError(`${path.basename(file)} 파일을 읽을 수 없습니다 — 손상되었거나 지원하지 않는 형식입니다 (${detail})`);
@@ -146,14 +163,20 @@ export function mediaInfo(probeJson) {
   if (sarMatch && +sarMatch[1] > 0 && +sarMatch[2] > 0) sar = +sarMatch[1] / +sarMatch[2];
   if (Math.abs(sar - 1) < 0.01) sar = 1;
   if (Math.abs(rotation) % 180 === 90) [w, h] = [h, w];
+  // decoded (autorotated) frame size as the filter graph sees it — crop rectangles are in these pixels
+  const storedW = w;
+  const storedH = h;
   if (w && sar !== 1) w = Math.round(w * sar);
   const durations = [Number(v.duration), Number(probeJson?.format?.duration)].filter((d) => Number.isFinite(d) && d > 0);
   const pixFmt = v.pix_fmt || '';
   const transfer = v.color_transfer || '';
   const primaries = v.color_primaries || '';
+  const audio = streams.filter((s) => s.codec_type === 'audio').map((s) => ({ channels: Number(s.channels) || 0, layout: s.channel_layout || '' }));
   return {
     w,
     h,
+    storedW,
+    storedH,
     duration: durations.length ? durations[0] : null,
     fps: parseRate(v.avg_frame_rate) || parseRate(v.r_frame_rate),
     codec: v.codec_name || '',
@@ -164,8 +187,9 @@ export function mediaInfo(probeJson) {
     transfer,
     primaries,
     hdr: transfer === 'smpte2084' || transfer === 'arib-std-b67' || /^bt2020/.test(primaries),
-    hasAudio: streams.some((s) => s.codec_type === 'audio'),
-    audioChannels: Number(streams.find((s) => s.codec_type === 'audio')?.channels) || 0,
+    hasAudio: audio.length > 0,
+    audioChannels: audio[0]?.channels || 0,
+    audio,
     frames: Number(v.nb_frames) || null,
     sar,
     interlaced: ['tt', 'bb', 'tb', 'bt'].includes(v.field_order),
@@ -211,51 +235,106 @@ function deint(info) {
 }
 
 /**
- * Target size part of a scale filter. Square-pixel sources use expressions (width ≤ maxW, aspect kept);
- * non-square sources get explicit display-aspect dimensions (+ setsar=1 afterwards).
+ * `crop=w:h:x:y,` for a letterbox rectangle { w, h, x, y } (decoded pixels, applied before any scaling), '' for none.
+ * Rectangles come from letterbox.mjs and are even-aligned, so 4:2:0 chroma stays sited.
  */
-function sizeFor(info, maxW, { evenDims }) {
-  if (info?.sar && info.sar !== 1 && info.w && info.h) {
-    const W = Math.min(maxW, info.w);
-    const H = Math.round((W * info.h) / info.w);
-    return { dims: evenDims ? `w=${even(W)}:h=${even(H)}` : `w=${W}:h=${H}`, post: ',setsar=1' };
+export function cropFilter(crop) {
+  return crop ? `crop=${crop.w}:${crop.h}:${crop.x}:${crop.y},` : '';
+}
+
+/** Decoded (autorotated, non-square) size of a source; older callers may pass only the display w/h + sar. */
+function storedSize(info) {
+  const sar = info?.sar || 1;
+  return { w: info?.storedW || (info?.w ? Math.round(info.w / sar) : null), h: info?.storedH || info?.h || null };
+}
+
+/** Display size (square pixels) of the frame entering the scaler, after an optional crop. null when unknown. */
+function displaySize(info, crop) {
+  const s = crop ? { w: crop.w, h: crop.h } : storedSize(info);
+  if (!s.w || !s.h) return null;
+  return { w: s.w * (info?.sar || 1), h: s.h };
+}
+
+/**
+ * Target size part of a scale filter. The frame is fitted into a maxW × maxW box — the long edge is capped, so a
+ * vertical 9:16 master gets the same pixel budget as a landscape one (never upscaled, aspect kept).
+ * Square-pixel sources use expressions (they see the cropped iw/ih); non-square sources get explicit
+ * display-aspect dimensions (+ setsar=1 afterwards).
+ */
+function sizeFor(info, maxW, { evenDims, crop = null }) {
+  if (info?.sar && info.sar !== 1) {
+    const d = displaySize(info, crop);
+    if (d) {
+      const k = Math.min(1, maxW / d.w, maxW / d.h);
+      const W = d.w * k;
+      const H = d.h * k;
+      return { dims: evenDims ? `w=${even(W)}:h=${even(H)}` : `w=${Math.round(W)}:h=${Math.round(H)}`, post: ',setsar=1' };
+    }
   }
-  return { dims: evenDims ? `w='trunc(min(${maxW},iw)/2)*2':h=-2` : `w='min(${maxW},iw)':h=-1`, post: '' };
+  const box = `w='min(${maxW},iw)':h='min(${maxW},ih)':force_original_aspect_ratio=decrease`;
+  return { dims: evenDims ? `${box}:force_divisible_by=2` : box, post: '' };
 }
 
-/** video (any) → H.264 yuv420p BT.709 limited range, width ≤ maxW (never upscaled). */
-export function videoScaleFilter(info, maxW) {
+/**
+ * Scale-then-center-crop ("cover") size that fills exactly W × H without distorting the (cropped) source.
+ * null when the source size is unknown or already has W × H's aspect (then a plain W × H scale is exact).
+ */
+export function coverSize(info, W, H, crop = null) {
+  const d = displaySize(info, crop);
+  if (!d) return null;
+  const k = Math.max(W / d.w, H / d.h);
+  const w = Math.max(W, Math.ceil(d.w * k - 1e-6));
+  const h = Math.max(H, Math.ceil(d.h * k - 1e-6));
+  return w - W <= 1 && h - H <= 1 ? null : { w, h };
+}
+
+/** video (any) → H.264 yuv420p BT.709 limited range, fitted into maxW × maxW (never upscaled), optional crop first. */
+export function videoScaleFilter(info, maxW, { crop = null } = {}) {
   const flags = 'flags=lanczos+accurate_rnd';
-  const { dims, post } = sizeFor(info, maxW, { evenDims: true });
+  const { dims, post } = sizeFor(info, maxW, { evenDims: true, crop });
   const color = info?.isRgb ? '' : `:in_color_matrix=${matrixOf(info)}:in_range=${rangeOf(info)}`;
-  return `${deint(info)}scale=${dims}:${flags}${color}:out_color_matrix=bt709:out_range=tv,format=yuv420p${post}`;
+  return `${deint(info)}${cropFilter(crop)}scale=${dims}:${flags}${color}:out_color_matrix=bt709:out_range=tv,format=yuv420p${post}`;
 }
 
-/** Exact-size variant (stacked B/A halves). */
-export function videoScaleExactFilter(info, W, H) {
+/**
+ * Exact-size variant (stacked B/A halves): scaled to cover W × H and center-cropped — a source with another
+ * aspect ratio is trimmed, never stretched.
+ */
+export function videoScaleExactFilter(info, W, H, { crop = null } = {}) {
   const color = info?.isRgb ? '' : `:in_color_matrix=${matrixOf(info)}:in_range=${rangeOf(info)}`;
-  return `${deint(info)}scale=w=${W}:h=${H}:flags=lanczos+accurate_rnd${color}:out_color_matrix=bt709:out_range=tv,format=yuv420p,setsar=1`;
+  const cover = coverSize(info, W, H, crop);
+  const dims = cover ? `w=${cover.w}:h=${cover.h}` : `w=${W}:h=${H}`;
+  return `${deint(info)}${cropFilter(crop)}scale=${dims}:flags=lanczos+accurate_rnd${color}:out_color_matrix=bt709:out_range=tv${cover ? `,crop=${W}:${H}` : ''},format=yuv420p,setsar=1`;
 }
 
 /**
  * anything → rgb24 (lossless master for stills). Exactly one explicit YUV→RGB conversion.
- * Either width ≤ maxW (aspect kept) or an exact { w, h } size.
+ * Either fitted into maxW × maxW (aspect kept) or an exact { w, h } size (cover + center crop, never stretched).
+ * `crop` (letterbox rectangle) is applied before scaling.
  */
-export function rgbMasterFilter(info, { maxW = 1920, size = null, still = false } = {}) {
-  const { dims, post } = size ? { dims: `w=${size.w}:h=${size.h}`, post: ',setsar=1' } : sizeFor(info, maxW, { evenDims: false });
+export function rgbMasterFilter(info, { maxW = 1920, size = null, still = false, crop = null } = {}) {
+  let dims;
+  let post;
+  if (size) {
+    const cover = coverSize(info, size.w, size.h, crop);
+    dims = cover ? `w=${cover.w}:h=${cover.h}` : `w=${size.w}:h=${size.h}`;
+    post = `${cover ? `,crop=${size.w}:${size.h}` : ''},setsar=1`;
+  } else ({ dims, post } = sizeFor(info, maxW, { evenDims: false, crop }));
   const flags = 'flags=lanczos+accurate_rnd+full_chroma_int+full_chroma_inp';
   const color = info?.isRgb ? '' : `:in_color_matrix=${matrixOf(info, { still })}:in_range=${rangeOf(info, { still })}`;
-  return `${deint(info)}scale=${dims}:${flags}${color},format=rgb24${post}`;
+  return `${deint(info)}${cropFilter(crop)}scale=${dims}:${flags}${color},format=rgb24${post}`;
 }
 
-/** rgb24 master → JPEG (JFIF: BT.601 matrix, full range), width ≤ maxW. */
+const FIT_BOX = (maxW) => `w='min(${maxW},iw)':h='min(${maxW},ih)':force_original_aspect_ratio=decrease`;
+
+/** rgb24 master → JPEG (JFIF: BT.601 matrix, full range), fitted into maxW × maxW. */
 export function jpegFromRgbFilter(maxW) {
-  return `scale=w='min(${maxW},iw)':h=-1:flags=lanczos+accurate_rnd:out_color_matrix=bt601:out_range=pc,format=yuvj420p`;
+  return `scale=${FIT_BOX(maxW)}:flags=lanczos+accurate_rnd:out_color_matrix=bt601:out_range=pc,format=yuvj420p`;
 }
 
-/** rgb24 master → BGRA for libwebp (libwebp does its own RGB→YUV, matching WebP decoders), width ≤ maxW. */
+/** rgb24 master → BGRA for libwebp (libwebp does its own RGB→YUV, matching WebP decoders), fitted into maxW × maxW. */
 export function webpFromRgbFilter(maxW) {
-  return `scale=w='min(${maxW},iw)':h=-1:flags=lanczos+accurate_rnd,format=bgra`;
+  return `scale=${FIT_BOX(maxW)}:flags=lanczos+accurate_rnd,format=bgra`;
 }
 
 /** Output flags that tag a video stream as BT.709 SDR (spec §3.2). */
@@ -264,7 +343,14 @@ export const BT709_TAGS = ['-color_primaries', 'bt709', '-color_trc', 'bt709', '
 /**
  * H.264 High, yuv420p, BT.709-tagged. aq-mode 3 (auto-variance with dark-scene bias) keeps smooth dark
  * gradients — skies, vignettes, fades — from banding at the higher CRFs used for previews and loops.
+ * Optional VBV ceiling (maxrate/bufsize: capped CRF — simple content stays small, grain peaks are trimmed) and
+ * level (4.1 makes x264 clamp reference frames so every phone decoder accepts 1080p).
  */
-export function x264Args({ crf, preset = 'medium' }) {
-  return ['-c:v', 'libx264', '-preset', preset, '-crf', String(crf), '-profile:v', 'high', '-aq-mode', '3', '-pix_fmt', 'yuv420p', ...BT709_TAGS];
+export function x264Args({ crf, preset = 'medium', level = null, maxrate = null, bufsize = null }) {
+  return [
+    '-c:v', 'libx264', '-preset', preset, '-crf', String(crf), '-profile:v', 'high',
+    ...(level ? ['-level:v', String(level)] : []),
+    ...(maxrate ? ['-maxrate', String(maxrate), '-bufsize', String(bufsize || maxrate)] : []),
+    '-aq-mode', '3', '-pix_fmt', 'yuv420p', ...BT709_TAGS,
+  ];
 }

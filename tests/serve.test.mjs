@@ -152,6 +152,10 @@ test('preview overlay: .preview over site/, /media → raw media folder', async 
   assert.equal((await request(port, '/media/works/draft/poster.jpg')).body.toString(), 'draft poster');
   assert.equal((await request(port, '/media/works/a/main.mp4')).status, 200); // site/media fallback
   assert.equal((await request(port, '/media/../secret.txt')).status, 404);
+  // dotfiles (media/.cache.json, temp files) are never served
+  await write(path.join(root, 'media', '.cache.json'), '{"jobs":{}}');
+  assert.equal((await request(port, '/media/.cache.json')).status, 404);
+  assert.equal((await request(port, '/media/works/.x.tmp-1.mp4')).status, 404);
   const nf = await request(port, '/missing');
   assert.equal(nf.status, 404);
   assert.match(nf.body.toString(), /없음/);
@@ -189,6 +193,45 @@ test('CLI: serve --preview prints URLs and serves', async () => {
     });
     const r = await request(port, '/works/draft/');
     assert.equal(r.status, 200);
+  } finally {
+    child.kill();
+  }
+});
+
+/** Start serve.mjs and resolve with its full banner once it is listening. */
+function startServe(args) {
+  const child = spawn(process.execPath, [path.join(REPO, 'tools', 'serve.mjs'), ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+  const banner = new Promise((resolve, reject) => {
+    let out = '';
+    const timer = setTimeout(() => reject(new Error(`timeout: ${out}`)), 10000);
+    child.stdout.on('data', (d) => {
+      out += d;
+      if (out.includes('Ctrl+C')) {
+        clearTimeout(timer);
+        resolve(out);
+      }
+    });
+    child.on('exit', (code) => reject(new Error(`exited ${code}: ${out}`)));
+  });
+  return { child, banner };
+}
+
+test('CLI: the preview (unconsented works) listens on this computer only unless --lan', async () => {
+  const { root } = await fixture();
+  let { child, banner } = startServe(['--root', root, '--preview', '--port', '0']);
+  try {
+    const out = await banner;
+    assert.match(out, /http:\/\/127\.0\.0\.1:\d+\//);
+    assert.doesNotMatch(out, /휴대폰\(같은 와이파이\)/);
+    assert.match(out, /--lan/);
+  } finally {
+    child.kill();
+  }
+  ({ child, banner } = startServe(['--root', root, '--preview', '--lan', '--port', '0']));
+  try {
+    const out = await banner;
+    assert.match(out, /http:\/\/localhost:\d+\//);
+    assert.match(out, /비공개 작업이 같은 네트워크의 모든 기기에 보입니다/);
   } finally {
     child.kill();
   }

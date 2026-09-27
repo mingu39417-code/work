@@ -24,6 +24,7 @@ test('normalizeSite fills every default (no undefined reaches templates)', () =>
     assert.equal(site.sections[k].title, '');
   }
   assert.equal(site.sections.compare.eyebrow, 'BEFORE / AFTER');
+  assert.deepEqual(site.sections.works.empty, { title: '', body: '', cta: '' });
   assert.deepEqual(site.packages, []);
   assert.deepEqual(site.formats, { groups: [] });
   assert.equal(site.about.portrait, null);
@@ -38,6 +39,15 @@ test('normalizeSite fills every default (no undefined reaches templates)', () =>
   scan(site, 'site');
   assert.ok(is.warnings.some((w) => w.includes('siteUrl')));
   assert.ok(is.warnings.some((w) => w.includes('kmongUrl')));
+});
+
+test('sections.works.empty (0 public works) is passed through for the owner to edit', () => {
+  const site = normalizeSite(
+    { contact: { email: 'a@b.co' }, sections: { works: { title: '작업', empty: { title: ' 곧 올라갑니다 ', body: '본문', cta: 3, extra: 'x' } } } },
+    issues(),
+  );
+  assert.deepEqual(site.sections.works.empty, { title: '곧 올라갑니다', body: '본문', cta: '3' });
+  assert.equal(site.sections.works.title, '작업');
 });
 
 test('siteUrl is normalized without trailing slash; must be https', () => {
@@ -179,7 +189,9 @@ test('works: publish must be literally true; date validated and fills year', () 
   assert.equal(a.date, '');
   assert.equal(b.date, '2024-05-01');
   assert.equal(b.year, 2024);
-  assert.equal(is.warnings.length, 1);
+  // the quoted 'true' is not silently read as false: the owner is told to drop the quotes
+  assert.equal(is.warnings.length, 2);
+  assert.ok(is.warnings.some((w) => w.includes('publish') && w.includes('따옴표 없이')));
 });
 
 test('sortWorks: order asc, then year desc (unknown last), then title', () => {
@@ -224,4 +236,105 @@ test('loadContent reads fresh copies and reports syntax errors in Korean', async
 test('the repository content validates without errors', async () => {
   const c = await loadContent(REPO);
   assert.deepEqual(c.errors, []);
+});
+
+test('works.private.mjs: merged after works.mjs, duplicate slugs across files caught, leaks from works.mjs reported', async () => {
+  const root = await makeProject({
+    works: [work('public-one'), work('pending-in-public', { consent: 'pending', client: '대기클라이언트' }), work('draft-plain', { publish: false })],
+  });
+  let c = await loadContent(root);
+  assert.equal(c.privateCount, 0);
+  assert.equal(c.works.find((w) => w.slug === 'public-one').source, 'works');
+  // the tracked file names a client for a work without consent → move it
+  const leak = c.warnings.find((w) => w.includes('works.private.mjs'));
+  assert.ok(leak && leak.includes('pending-in-public') && !leak.includes('draft-plain'), leak);
+  await write(path.join(root, 'content', 'works.mjs'), `export default ${JSON.stringify([work('public-one')])};`);
+  await write(path.join(root, 'content', 'works.private.mjs'), `export default ${JSON.stringify([work('pending-in-public', { consent: 'pending', client: '대기클라이언트' })])};`);
+  c = await loadContent(root);
+  assert.deepEqual(c.errors, []);
+  assert.equal(c.privateCount, 1);
+  assert.deepEqual(c.works.map((w) => [w.slug, w.source]).sort(), [['pending-in-public', 'private'], ['public-one', 'works']]);
+  assert.ok(!c.warnings.some((w) => w.includes('works.private.mjs')), 'nothing left to move');
+  await write(path.join(root, 'content', 'works.private.mjs'), `export default ${JSON.stringify([work('public-one', { title: 'dup' })])};`);
+  c = await loadContent(root);
+  assert.ok(c.errors.some((e) => e.includes('works.private[0]') && e.includes('중복')), c.errors.join('\n'));
+});
+
+test('content files: missing export default, non-UTF-8 (ANSI/CP949) encoding and string booleans are reported', async () => {
+  const root = await makeProject({ works: [work('a')] });
+  const worksFile = path.join(root, 'content', 'works.mjs');
+  await write(worksFile, `export const works = ${JSON.stringify([work('a')])};`);
+  let c = await loadContent(root);
+  assert.ok(c.errors.some((e) => e.includes('export default')), 'export const → error, not an empty site');
+  // '작품' in CP949 (EUC-KR) bytes: C0 DB C7 B0
+  await write(worksFile, Buffer.concat([Buffer.from("export default [{ slug: 'a', title: '"), Buffer.from([0xc0, 0xdb, 0xc7, 0xb0]), Buffer.from("', category: 'film' }];")]));
+  c = await loadContent(root);
+  assert.ok(c.errors.some((e) => e.includes('UTF-8')), c.errors.join('\n'));
+  // a UTF-8 file with BOM + CRLF is fine
+  await write(worksFile, `﻿export default [\r\n  { slug: 'a', title: '작품', category: 'film', publish: 'true', featured: 'yes' },\r\n];\r\n`);
+  c = await loadContent(root);
+  assert.deepEqual(c.errors, []);
+  assert.equal(c.works[0].title, '작품');
+  assert.equal(c.works[0].publish, false);
+  assert.ok(c.warnings.some((w) => w.includes('publish') && w.includes('따옴표 없이')));
+  assert.ok(c.warnings.some((w) => w.includes('featured')));
+});
+
+test('hero.primaryCta.href: sections, relative paths, https/mailto/tel only', () => {
+  const href = (h) => {
+    const is = issues();
+    const s = normalizeSite({ ...BASE_SITE, hero: { primaryCta: { href: h } } }, is);
+    return [s.hero.primaryCta.href, is.errors.length];
+  };
+  assert.deepEqual(href('#contact'), ['#contact', 0]);
+  assert.deepEqual(href('works/brand-film/'), ['works/brand-film/', 0]);
+  assert.deepEqual(href('https://kmong.com/gig/1'), ['https://kmong.com/gig/1', 0]);
+  assert.deepEqual(href('mailto:crafttone3@gmail.com'), ['mailto:crafttone3@gmail.com', 0]);
+  assert.deepEqual(href('tel:010-1234-5678'), ['tel:010-1234-5678', 0]);
+  assert.deepEqual(href(''), ['#contact', 0]);
+  for (const bad of ['javascript:alert(document.cookie)', 'http://kmong.com', 'kmong.com/gig/1', '//evil.example/x', 'data:text/html,x']) {
+    assert.deepEqual(href(bad), ['#contact', 1], bad);
+  }
+  const is = issues();
+  normalizeSite({ ...BASE_SITE, hero: { primaryCta: { href: 'kmong.com/gig/1' } } }, is);
+  assert.match(is.errors[0], /https:\/\/kmong\.com\/gig\/1/);
+});
+
+test('seo verification: a pasted <meta> tag is reduced to its code; junk is dropped with a warning', () => {
+  const is = issues();
+  const s = normalizeSite(
+    {
+      ...BASE_SITE,
+      seo: {
+        naverVerification: '<meta name="naver-site-verification" content="0a1b2c3d4e5f6a7b8c9d" />',
+        googleVerification: 'abcDEF_123-xyz456',
+      },
+    },
+    is,
+  );
+  assert.equal(s.seo.naverVerification, '0a1b2c3d4e5f6a7b8c9d');
+  assert.equal(s.seo.googleVerification, 'abcDEF_123-xyz456');
+  const is2 = issues();
+  assert.equal(normalizeSite({ ...BASE_SITE, seo: { googleVerification: '구글 코드 넣기' } }, is2).seo.googleVerification, '');
+  assert.equal(is2.warnings.filter((w) => w.includes('googleVerification')).length, 1);
+});
+
+test('reel options: consent (default pending), autoCrop, poster/loop timing', () => {
+  let is = issues();
+  let r = normalizeSite(BASE_SITE, is).reel;
+  assert.deepEqual([r.consent, r.autoCrop, r.posterTime, r.loopStart, r.loopDuration], ['pending', true, null, null, 20]);
+  r = normalizeSite({ ...BASE_SITE, reel: { consent: 'granted', autoCrop: false, posterTime: 12.5, loopStart: 2, loopDuration: 30 } }, is).reel;
+  assert.deepEqual([r.consent, r.autoCrop, r.posterTime, r.loopStart, r.loopDuration], ['granted', false, 12.5, 2, 30]);
+  assert.deepEqual(is.errors, []);
+  is = issues();
+  r = normalizeSite({ ...BASE_SITE, reel: { consent: 'yes', loopDuration: 90, autoCrop: 'false' } }, is).reel;
+  assert.equal(r.consent, 'pending');
+  assert.equal(is.errors.length, 1);
+  assert.equal(r.loopDuration, 20);
+  assert.equal(r.autoCrop, true);
+  assert.equal(is.warnings.filter((w) => w.includes('loopDuration') || w.includes('autoCrop')).length, 2);
+  // works: autoCrop defaults to true
+  const site = normalizeSite(BASE_SITE, issues());
+  const [w1, w2] = normalizeWorks([work('a'), work('b', { autoCrop: false })], site, issues());
+  assert.deepEqual([w1.autoCrop, w2.autoCrop], [true, false]);
 });

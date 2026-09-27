@@ -1,8 +1,8 @@
 // Home page: hero → works → compare → services → process → formats → packages → about → faq → contact.
-import { esc, attrs, arr, filled, int, assetUrl, linkHref, srcsetOf, pickSrc, externalAttrs, joinParts, pad2, labelClass, hasHangul } from './util.mjs';
+import { esc, krText, attrs, arr, filled, int, assetUrl, linkHref, srcsetOf, pickSrc, externalAttrs, joinParts, pad2, labelClass, langAttr, hasHangul } from './util.mjs';
 import { icons, vectorscope } from './icons.mjs';
 import { documentShell, contactLinks, kmongButton } from './layout.mjs';
-import { sectionHead, workCard, workSpans, compareFigure, bulletList } from './components.mjs';
+import { sectionHead, workCard, workSpans, loneInPairs, compareFigure, bulletList } from './components.mjs';
 
 // ---------------------------------------------------------------------------------------------
 // Hero
@@ -101,7 +101,7 @@ function hero(vm) {
   const meta = hasLoop
     ? `<div class="hero__meta">
       <p class="hero__tc"><span class="hero__tc-label" aria-hidden="true">TC</span><span class="timecode" data-timecode aria-hidden="true">00:00:00:00</span></p>
-      <button class="hero__toggle" type="button" data-hero-toggle aria-pressed="false" aria-label="배경 영상 일시정지">${icons.pause('hero__icon-pause')}${icons.play('hero__icon-play')}</button>
+      <button class="hero__toggle" type="button" data-hero-toggle aria-pressed="true" aria-label="배경 영상 일시정지">${icons.pause('hero__icon-pause')}${icons.play('hero__icon-play')}</button>
     </div>`
     : variant === 'graphic'
       ? `<div class="hero__readout label" aria-hidden="true"><span>VECTORSCOPE</span><span>REC.709</span><span>75%</span></div>`
@@ -113,10 +113,10 @@ function hero(vm) {
   </div>
   <div class="hero__content">
     <div class="hero__inner">
-      <p class="${labelClass(h.eyebrow, 'hero__eyebrow label')}"><span class="hero__dot" aria-hidden="true"></span>${esc(filled(h.eyebrow) ? h.eyebrow : 'COLOR GRADING · DI')}</p>
+      ${heroEyebrow(h.eyebrow)}
       <h1 class="hero__title">${title.map((line) => `<span class="hero__line">${esc(line)}</span>`).join(' ')}</h1>
-      ${filled(h.lead) ? `<p class="hero__lead" data-reveal>${esc(h.lead)}</p>` : ''}
-      <div class="hero__actions" data-reveal>
+      ${filled(h.lead) ? `<p class="hero__lead">${krText(h.lead)}</p>` : ''}
+      <div class="hero__actions">
         ${primaryCta}
         ${reelCta}
       </div>
@@ -124,6 +124,11 @@ function hero(vm) {
   </div>
   ${meta}
 </section>`;
+}
+
+function heroEyebrow(eyebrow) {
+  const text = filled(eyebrow) ? eyebrow : 'COLOR GRADING · DI';
+  return `<p class="${labelClass(text, 'hero__eyebrow label')}"${langAttr(text)}><span class="hero__dot" aria-hidden="true"></span>${esc(text)}</p>`;
 }
 
 function formatDuration(seconds) {
@@ -141,6 +146,19 @@ const sectionCopy = (vm, key, fallbackEyebrow) => {
   return { eyebrow: filled(s.eyebrow) ? s.eyebrow : fallbackEyebrow, title: s.title || '', lead: s.lead || '' };
 };
 
+/** Works empty state (0 published works — the launch state). Copy: site.sections.works.empty { title, body, cta }. */
+const WORKS_EMPTY = {
+  title: '작업물을 정리하고 있습니다.',
+  body: '공개 동의를 받은 작업부터 차례로 올리고 있습니다. 프로젝트에 맞는 참고 자료가 필요하시면 문의해 주세요.',
+  cta: '문의하기',
+};
+
+function worksEmptyCopy(vm) {
+  const e = vm.site?.sections?.works?.empty || {};
+  const pick = (key) => (filled(e[key]) ? e[key] : WORKS_EMPTY[key]);
+  return { title: pick('title'), body: pick('body'), cta: pick('cta') };
+}
+
 function worksSection(vm, num) {
   const root = vm.paths?.root ?? '';
   const works = arr(vm.works);
@@ -149,15 +167,17 @@ function worksSection(vm, num) {
   const aside = works.length ? `${pad2(works.length)} ${works.length === 1 ? 'PROJECT' : 'PROJECTS'}` : '';
   let body;
   if (!works.length) {
+    copy.lead = ''; // the lead describes the list ('장르별로 정리한 …'), which the empty state contradicts
+    const empty = worksEmptyCopy(vm);
     body = `<div class="works-empty" data-reveal>
       <div class="works-empty__frame" aria-hidden="true">
         <span class="works-empty__corner works-empty__corner--tl"></span><span class="works-empty__corner works-empty__corner--tr"></span><span class="works-empty__corner works-empty__corner--bl"></span><span class="works-empty__corner works-empty__corner--br"></span>
         <span class="label">COMING SOON</span>
       </div>
       <div class="works-empty__text">
-        <p class="works-empty__title">작업물을 정리하고 있습니다.</p>
-        <p>공개 가능한 작업부터 차례로 올리고 있습니다. 원하시는 장르의 레퍼런스가 필요하시면 문의해 주세요. 따로 안내해 드리겠습니다.</p>
-        <a class="button button--primary"${attrs({ href: `${root}#contact` })} data-track="cta_contact">레퍼런스 요청하기${icons.arrowRight()}</a>
+        <p class="works-empty__title">${krText(empty.title)}</p>
+        <p>${krText(empty.body)}</p>
+        <a class="button button--primary"${attrs({ href: `${root}#contact` })} data-track="cta_contact">${esc(empty.cta)}${icons.arrowRight()}</a>
       </div>
     </div>`;
   } else {
@@ -175,9 +195,10 @@ function worksSection(vm, num) {
     <p class="sr-only" data-filter-status aria-live="polite"></p>`
         : '';
     const spans = workSpans(works);
+    const lone = loneInPairs(spans.map((span) => span === 12)); // the 2-column tier (640–1099px)
     body = `${filters}
     <ul class="work-grid" data-work-grid>
-      ${works.map((w, i) => workCard(root, w, spans[i])).join('\n      ')}
+      ${works.map((w, i) => workCard(root, w, spans[i], { mdFull: lone[i] })).join('\n      ')}
     </ul>`;
   }
   return `<section class="section section--works" id="works" aria-labelledby="works-title">
@@ -192,10 +213,18 @@ function compareSection(vm, num) {
   const root = vm.paths?.root ?? '';
   const picks = arr(vm.comparisons).filter((p) => p && p.work && p.comparison);
   const copy = sectionCopy(vm, 'compare', 'BEFORE / AFTER');
-  const rest = picks.length - 1;
+  // Full-row ("wide") items: the first pick, and every pick that is not landscape (9:16, 4:3 …) — next to a
+  // 16:9 pair it would make a ragged row with captions at different heights. Landscape picks pair up in
+  // DOM order; one left alone between wide items is widened too.
+  const ars = picks.map(({ comparison }) => {
+    const size = comparison.after || comparison.before || {};
+    return (int(size.w) || 1920) / (int(size.h) || 1080);
+  });
+  const fullRow = picks.map((p, i) => i === 0 || ars[i] < 1.5);
+  const lone = loneInPairs(fullRow);
   const items = picks
     .map((p, i) => {
-      const wide = i === 0 || (rest % 2 === 1 && i === picks.length - 1);
+      const wide = fullRow[i] || lone[i];
       const sizes = wide ? '(min-width: 1440px) 1344px, 94vw' : '(min-width: 1440px) 660px, (min-width: 900px) 46vw, 94vw';
       const w = p.work;
       const caption = `<span class="compare__index label">${esc(pad2(i + 1))}</span>
@@ -222,10 +251,10 @@ function servicesSection(vm, num) {
   const items = services
     .map(
       (s, i) => `<li class="service" data-reveal>
-        <div class="service__index"><span class="service__num label">${esc(pad2(i + 1))}</span>${filled(s.en) ? `<span class="${labelClass(s.en, 'service__en label')}">${esc(s.en)}</span>` : ''}</div>
+        <div class="service__index"><span class="service__num label">${esc(pad2(i + 1))}</span>${filled(s.en) ? `<span class="${labelClass(s.en, 'service__en label')}"${langAttr(s.en)}>${esc(s.en)}</span>` : ''}</div>
         <div class="service__main">
           <h3 class="service__title">${esc(s.title)}</h3>
-          ${filled(s.summary) ? `<p class="service__summary">${esc(s.summary)}</p>` : ''}
+          ${filled(s.summary) ? `<p class="service__summary">${krText(s.summary)}</p>` : ''}
         </div>
         ${bulletList(s.points, 'service__points bullets')}
       </li>`,
@@ -254,9 +283,9 @@ function processSection(vm, num) {
   const items = steps
     .map(
       (s, i) => `<li class="process__step" data-reveal>
-        <p class="process__num label"><span>STEP</span> ${esc(pad2(i + 1))}</p>
+        <p class="process__num label"><span lang="en">STEP</span> ${esc(pad2(i + 1))}</p>
         <h3 class="process__title">${esc(s.title)}</h3>
-        ${filled(s.body) ? `<p class="process__body">${esc(s.body)}</p>` : ''}
+        ${filled(s.body) ? `<p class="process__body">${krText(s.body)}</p>` : ''}
       </li>`,
     )
     .join('\n      ');
@@ -303,10 +332,10 @@ function packagesSection(vm, num) {
       (p, i) => `<li class="package" data-reveal>
         <p class="package__index label">${esc(pad2(i + 1))}</p>
         <h3 class="package__name">${esc(p.name)}</h3>
-        ${filled(p.summary) ? `<p class="package__summary">${esc(p.summary)}</p>` : ''}
+        ${filled(p.summary) ? `<p class="package__summary">${krText(p.summary)}</p>` : ''}
         ${filled(p.price) ? `<p class="package__price">${esc(p.price)}</p>` : ''}
         ${bulletList(p.includes, 'package__includes checks')}
-        ${filled(p.note) ? `<p class="package__note">${esc(p.note)}</p>` : ''}
+        ${filled(p.note) ? `<p class="package__note">${krText(p.note)}</p>` : ''}
         <a class="button button--ghost button--sm package__cta"${attrs({ href: `${root}#contact` })} data-track="package_inquiry">이 구성으로 문의${icons.arrowRight()}</a>
       </li>`,
     )
@@ -347,12 +376,12 @@ function aboutSection(vm, num) {
     <div${attrs({ class: `about${portrait ? ' about--portrait' : ''}` })}>
       ${portrait || name ? `<div class="about__id" data-reveal>${portrait}${name}</div>` : ''}
       <div class="about__text" data-reveal>
-        ${paragraphs.map((p) => `<p>${esc(p)}</p>`).join('\n        ')}
+        ${paragraphs.map((p) => `<p>${krText(p)}</p>`).join('\n        ')}
       </div>
       ${
         facts.length
           ? `<dl class="facts" data-reveal>
-        ${facts.map((f) => `<div class="facts__row"><dt class="${labelClass(f.label)}">${esc(f.label)}</dt><dd>${esc(f.value)}</dd></div>`).join('\n        ')}
+        ${facts.map((f) => `<div class="facts__row"><dt class="${labelClass(f.label)}"${langAttr(f.label)}>${esc(f.label)}</dt><dd>${krText(f.value)}</dd></div>`).join('\n        ')}
       </dl>`
           : ''
       }
@@ -367,7 +396,7 @@ function richText(text) {
     .split(/\n{2,}/)
     .map((para) => para.trim())
     .filter(Boolean)
-    .map((para) => `<p>${para.split('\n').map(esc).join('<br>')}</p>`)
+    .map((para) => `<p>${para.split('\n').map(krText).join('<br>')}</p>`)
     .join('');
 }
 
@@ -377,7 +406,7 @@ function faqSection(vm, num) {
   const items = faq
     .map(
       (f, i) => `<details class="faq__item" data-reveal>
-        <summary class="faq__q"><span class="faq__num label" aria-hidden="true">Q${esc(pad2(i + 1))}</span><span class="faq__text">${esc(f.q)}</span><span class="faq__icon" aria-hidden="true">${icons.plus()}</span></summary>
+        <summary class="faq__q"><span class="faq__num label" aria-hidden="true">Q${esc(pad2(i + 1))}</span><span class="faq__text">${krText(f.q)}</span><span class="faq__icon" aria-hidden="true">${icons.plus()}</span></summary>
         <div class="faq__a">${richText(f.a)}</div>
       </details>`,
     )
@@ -441,7 +470,7 @@ export function inquiryForm(vm) {
       ? { action: `mailto:${email}`, method: 'post', enctype: 'text/plain' }
       : {};
   const fields = [
-    field({ name: 'name', label: '성함 / 회사명', required: true, half: true, autocomplete: 'name', placeholder: '홍길동 / 톤크래프트 필름' }),
+    field({ name: 'name', label: '성함 / 회사명', required: true, half: true, autocomplete: 'name', placeholder: '홍길동 / 회사명' }),
     field({ name: 'reply', label: '회신받을 연락처', required: true, half: true, autocomplete: 'email', placeholder: '이메일 또는 전화번호' }),
     field({ name: 'type', label: '프로젝트 유형', half: true, options: inquiry.projectTypes }),
     field({ name: 'runtime', label: '러닝타임 · 분량', half: true, placeholder: '예: 30초 광고 2편, 4분 뮤직비디오' }),
@@ -454,7 +483,7 @@ export function inquiryForm(vm) {
       label: '프로젝트 내용',
       type: 'textarea',
       required: true,
-      placeholder: '원하시는 톤과 분위기, 납품 포맷(유튜브·방송·극장 등), 현재 편집 단계를 알려주시면 더 정확한 견적을 드릴 수 있습니다.',
+      placeholder: '원하시는 톤과 분위기, 납품 포맷(유튜브·SNS·방송 등), 현재 편집 단계를 알려주시면 더 정확한 견적을 드릴 수 있습니다.',
     }),
   ];
   return `<form${attrs({
@@ -467,8 +496,8 @@ export function inquiryForm(vm) {
     ...fallback,
   })}>
     <div class="inquiry__head">
-      <p class="label">PROJECT BRIEF</p>
-      <p class="inquiry__legend"><span class="field__req" aria-hidden="true">필수</span> 표시 항목만 채워도 충분합니다.</p>
+      <p class="label" lang="en">PROJECT BRIEF</p>
+      <p class="inquiry__legend"><span class="field__req">필수</span> 표시 항목만 채워도 충분합니다.</p>
     </div>
     <div class="inquiry__grid">
       ${fields.join('\n      ')}
@@ -480,7 +509,7 @@ export function inquiryForm(vm) {
     ${
       endpoint
         ? ''
-        : `<p class="inquiry__note">보내기를 누르면 사용 중인 메일 앱이 열리고, 작성하신 내용이 자동으로 채워집니다.${filled(email) ? ` 메일 앱이 없다면 내용을 복사해 <strong>${esc(email)}</strong>로 보내주세요.` : ''}</p>`
+        : `<p class="inquiry__note">보내기를 누르면 사용 중인 메일 앱이 열리고, 작성하신 내용이 자동으로 채워집니다.${filled(email) ? ` 메일 앱이 없다면 내용을 복사해 <strong>${esc(email)}</strong> 주소로 보내주세요.` : ''}</p>`
     }
     <p class="inquiry__status" data-inquiry-status role="status" aria-live="polite"></p>
   </form>`;
@@ -497,13 +526,13 @@ function contactSection(vm, num) {
     ${sectionHead({ id: 'contact', num, ...copy })}
     <div class="contact">
       <div class="contact__aside" data-reveal>
-        ${filled(inquiry.intro) ? `<p class="contact__intro">${esc(inquiry.intro)}</p>` : ''}
+        ${filled(inquiry.intro) ? `<p class="contact__intro">${krText(inquiry.intro)}</p>` : ''}
         <div class="contact__direct">
-          <p class="label">DIRECT</p>
+          <p class="label" lang="en">DIRECT</p>
           ${contactLinks(vm, { variant: 'contact' })}
           ${filled(contact.responseNote) ? `<p class="contact__note"><span class="contact__note-dot" aria-hidden="true"></span>${esc(contact.responseNote)}</p>` : ''}
         </div>
-        ${kmong ? `<div class="contact__kmong"><p class="label">KMONG</p>${kmong}</div>` : ''}
+        ${kmong ? `<div class="contact__kmong"><p class="label" lang="en">KMONG</p>${kmong}</div>` : ''}
       </div>
       <div class="contact__form" data-reveal>
         ${inquiryForm(vm)}

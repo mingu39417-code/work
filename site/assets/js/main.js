@@ -32,15 +32,32 @@
   const SCROLLED_OFFSET = 24;
   const DRAFT_KEY = 'tonecraft:inquiry-draft';
   const DRAFT_MAX_AGE = 1000 * 60 * 60 * 24 * 30; // forget drafts after 30 days
-  const MAILTO_MAX = 2000; // longer mailto: URLs are silently dropped by some Windows mail handlers
+  // Phones and tablets hand mailto: to a mail app with no practical URL limit. On desktop, some
+  // Windows mail handlers silently drop long mailto: URLs, and web handlers (Gmail etc.) turn the
+  // whole URL into a GET request, so stay short there. iPadOS reports itself as a Mac.
+  const MOBILE_DEVICE = (() => {
+    try {
+      const nav = window.navigator;
+      return !!(
+        (nav.userAgentData && nav.userAgentData.mobile) ||
+        /Android|iPhone|iPad|iPod|Mobile/i.test(nav.userAgent || '') ||
+        (nav.platform === 'MacIntel' && nav.maxTouchPoints > 1)
+      );
+    } catch (err) {
+      return false;
+    }
+  })();
+  const MAILTO_MAX = MOBILE_DEVICE ? 8000 : 2000;
+  const MAILTO_FIELD_MAX = 80; // code points kept per field (and subject) when not even the message's start fits
   const ENDPOINT_TIMEOUT = 12000;
   const IFRAME_ALLOW = 'autoplay; fullscreen; picture-in-picture; encrypted-media';
 
   const TEXT = {
     copied: '복사했습니다',
     copyFailed: '복사하지 못했습니다. 직접 선택해 주세요',
-    heroPause: '배경 영상 일시정지',
-    heroPlay: '배경 영상 재생',
+    heroFailed: '배경 영상을 불러오지 못했습니다.',
+    compareFailed: '비교 영상을 불러오지 못했습니다.',
+    compareValue: (before, after, pos) => `${before} ${pos}% · ${after} ${100 - pos}%`,
     videoFallbackTitle: '영상',
     videoError: '영상을 불러오지 못했습니다.',
     videoErrorLink: '파일로 열기',
@@ -54,10 +71,12 @@
     inquirySending: '보내는 중입니다…',
     inquirySent: '문의가 전송되었습니다. 곧 연락드리겠습니다.',
     inquirySendFailed: '온라인 전송에 실패해 메일 앱으로 연결합니다.',
-    inquiryMailto: (email) => `메일 앱이 열리지 않았다면 '문의 내용 복사'를 누른 뒤 ${email}로 보내주세요.`,
-    inquiryTruncatedNote: "※ 내용이 길어 메일에는 일부만 담겼습니다. 웹사이트의 '문의 내용 복사' 버튼으로 전체 내용을 붙여넣어 주세요.",
+    // The particle attaches to 주소, not to the address itself (".com로" would be a typo).
+    inquiryMailto: (email) => `메일 앱이 열리지 않았다면 '문의 내용 복사'를 누른 뒤 ${email} 주소로 보내주세요.`,
+    // Every character here costs 3–9 characters of the capped mailto: URL — keep it short.
+    inquiryTruncatedNote: '※ 일부만 담겼습니다. 전체 내용은 웹사이트에서 복사해 붙여넣어 주세요.',
     inquiryTruncatedCopied: '문의 내용이 길어 전체 내용을 클립보드에 복사해 두었습니다. 메일 본문에 붙여넣어 주세요.',
-    inquiryCopied: (email) => `문의 내용을 복사했습니다. 메일 본문에 붙여넣어 ${email}로 보내주세요.`,
+    inquiryCopied: (email) => `문의 내용을 복사했습니다. 메일 본문에 붙여넣어 ${email} 주소로 보내주세요.`,
     inquiryCopiedNoEmail: '문의 내용을 복사했습니다.',
     inquiryCopyFailed: '복사하지 못했습니다. 내용을 직접 선택해 복사해 주세요.',
     inquiryInvalid: (n) => `필수 항목 ${n}개를 확인해 주세요.`,
@@ -175,6 +194,24 @@
     if (!el.getClientRects().length) return false;
     const style = window.getComputedStyle(el);
     return style.visibility !== 'hidden';
+  }
+
+  /**
+   * Call before hiding `control`: if it holds keyboard focus, move focus to the nearest
+   * focusable element before it inside `scope`, so focus never falls back to <body>.
+   * @returns {boolean} whether `control` had focus
+   */
+  function handOffFocus(control, scope) {
+    if (!control || !control.contains(doc.activeElement)) return false;
+    const before = qsa(FOCUSABLE, scope).filter(
+      (el) =>
+        !control.contains(el) &&
+        // eslint-disable-next-line no-bitwise
+        el.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING &&
+        isRendered(el)
+    );
+    focusElement(before[before.length - 1]);
+    return true;
   }
 
   /**
@@ -681,9 +718,12 @@
     let blocked = false; // the browser refused muted autoplay (e.g. iOS Low Power Mode)
     let failed = false;
     let playing = false;
-    // With IntersectionObserver, wait for its first report (it runs after a #fragment scroll on
-    // load), so a visitor landing on e.g. #contact never downloads the reel.
-    let inView = !('IntersectionObserver' in window);
+    let inView = !('IntersectionObserver' in window); // with IntersectionObserver, wait for its first report
+    // Landing on a #fragment (e.g. a work page's "프로젝트 문의하기" → ../../#contact): the observer's
+    // first report still sees the top of the page, and the browser scrolls to the fragment only
+    // around `load`, smoothly. Once play() has run the reel keeps downloading, so nothing starts
+    // until that scroll has settled.
+    let settled = !(window.location.hash.length > 1);
     let suspended = false; // video dialog open
     let loaded = false;
 
@@ -693,7 +733,7 @@
 
     const policyAllows = () => !prefersReducedMotion() && !constrainedNetwork(true);
     const wants = () => (userWants !== null ? userWants : policyAllows() && !blocked);
-    const shouldPlay = () => wants() && inView && !doc.hidden && !suspended && !failed;
+    const shouldPlay = () => settled && wants() && inView && !doc.hidden && !suspended && !failed;
 
     /* --- timecode ------------------------------------------------------- */
     let clockId = 0;
@@ -733,12 +773,13 @@
     };
 
     /* --- state ---------------------------------------------------------- */
+    // The toggle follows what is on screen, like its icon (CSS keys ▶/❚❚ on data-state): while the
+    // loop is still loading, or the browser paused it, it shows ▶ and a press means "play".
+    // Its name stays "배경 영상 일시정지"; aria-pressed="true" means paused.
+    const showsPlaying = () => wants() && playing;
     const render = () => {
       hero.setAttribute('data-state', playing ? 'playing' : 'paused');
-      if (!toggle) return;
-      const paused = !wants();
-      toggle.setAttribute('aria-pressed', String(paused));
-      toggle.setAttribute('aria-label', paused ? TEXT.heroPlay : TEXT.heroPause);
+      if (toggle) toggle.setAttribute('aria-pressed', String(!showsPlaying()));
     };
 
     const load = () => {
@@ -754,7 +795,11 @@
       stopClock();
       pauseVideo(video);
       // Never leave dead controls on screen: the poster stays, the controls go.
-      if (toggle) toggle.hidden = true;
+      if (toggle) {
+        const hadFocus = handOffFocus(toggle, hero);
+        toggle.hidden = true;
+        if (hadFocus || userWants === true) showToast(TEXT.heroFailed);
+      }
       if (timecode) timecode.hidden = true;
       render();
     };
@@ -805,8 +850,9 @@
 
     if (toggle) {
       toggle.addEventListener('click', () => {
-        userWants = !wants();
+        userWants = !showsPlaying();
         blocked = false;
+        settled = true; // an explicit choice needs no waiting
         sync();
       });
     }
@@ -815,6 +861,20 @@
       inView = visible;
       sync();
     });
+    if (!settled) {
+      const settle = debounce(() => {
+        window.removeEventListener('scroll', settle, passive);
+        settled = true;
+        if ('IntersectionObserver' in window) inView = isInViewport(hero);
+        sync();
+      }, 250);
+      const arm = () => {
+        window.addEventListener('scroll', settle, passive);
+        settle();
+      };
+      if (doc.readyState === 'complete') arm();
+      else window.addEventListener('load', arm, { once: true });
+    }
     doc.addEventListener('visibilitychange', sync);
     window.addEventListener('pageshow', sync);
     onMediaChange(reducedMotionQuery, sync);
@@ -1087,6 +1147,12 @@
     const frame = qs('[data-compare-frame]', figure);
     if (!frame) return;
     const range = qs('[data-compare-range]', frame) || qs('[data-compare-range]', figure);
+    const labelText = (selector, fallback) => {
+      const el = qs(selector, figure);
+      return (el && el.textContent.trim()) || fallback;
+    };
+    const beforeLabel = labelText('.compare__label--before', 'BEFORE');
+    const afterLabel = labelText('.compare__label--after', 'AFTER');
 
     let pos = 50;
     let videoLayer = null;
@@ -1101,7 +1167,10 @@
       if (!Number.isFinite(n)) return;
       pos = clamp(n, 0, 100);
       frame.style.setProperty('--pos', `${Math.round(pos * 1000) / 1000}%`);
-      if (range && !fromRange) range.value = String(pos);
+      if (range) {
+        if (!fromRange) range.value = String(pos);
+        range.setAttribute('aria-valuetext', TEXT.compareValue(beforeLabel, afterLabel, Math.round(pos)));
+      }
       if (videoLayer) videoLayer.redraw();
     };
 
@@ -1194,6 +1263,16 @@
     if (range) {
       range.addEventListener('input', () => setPos(range.value, true));
       range.addEventListener('change', () => setPos(range.value, true));
+      // The markup's fine step (0.5) suits the value, not the keyboard: arrows move 2%, with Shift 10%,
+      // snapping to that grid. Home/End/PageUp/PageDown keep their native behaviour.
+      range.addEventListener('keydown', (event) => {
+        const dir = { ArrowLeft: -1, ArrowDown: -1, ArrowRight: 1, ArrowUp: 1 }[event.key];
+        if (!dir || event.altKey || event.ctrlKey || event.metaKey) return;
+        event.preventDefault();
+        const step = event.shiftKey ? 10 : 2;
+        const index = dir > 0 ? Math.floor(pos / step + 1e-6) + 1 : Math.ceil(pos / step - 1e-6) - 1;
+        setPos(index * step, false);
+      });
     }
 
     /* --- video variant ---------------------------------------------------- */
@@ -1299,7 +1378,9 @@
       unloadVideo(video);
       if (video) video.remove();
       video = null;
+      handOffFocus(button, figure); // → the slider, which still works on the stills
       button.hidden = true;
+      showToast(TEXT.compareFailed);
     };
 
     const ensureVideo = () => {
@@ -1535,31 +1616,49 @@
     const mailtoUrl = (subject, body) =>
       `mailto:${email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body.replace(/\r?\n/g, '\r\n'))}`;
 
-    /** Build the mailto: URL, shortening the message when the URL would be too long. */
-    const fitMailto = (c) => {
-      const body = buildBody(c, c.message, '');
-      const url = mailtoUrl(c.subject, body);
-      if (url.length <= MAILTO_MAX || !c.message) return { body, url, truncated: false };
+    /** First `max` code points of `text` (never splitting a surrogate pair), marked with … when cut. */
+    const clip = (text, max) => {
+      const chars = Array.from(text);
+      return chars.length > max ? `${chars.slice(0, max).join('').trimEnd()}…` : text;
+    };
+
+    /** The mailto: URL with the longest message prefix that fits within MAILTO_MAX, or ''. */
+    const fitMessage = (c) => {
       const chars = Array.from(c.message); // code points — never split a surrogate pair
       let lo = 0;
       let hi = chars.length - 1;
-      let best = null;
+      let fitted = '';
       while (lo <= hi) {
         const mid = (lo + hi) >> 1; // eslint-disable-line no-bitwise
-        const shortBody = buildBody(c, `${chars.slice(0, mid).join('').trimEnd()}…`, TEXT.inquiryTruncatedNote);
-        const shortUrl = mailtoUrl(c.subject, shortBody);
-        if (shortUrl.length <= MAILTO_MAX) {
-          best = { body: shortBody, url: shortUrl };
+        const url = mailtoUrl(c.subject, buildBody(c, `${chars.slice(0, mid).join('').trimEnd()}…`, TEXT.inquiryTruncatedNote));
+        if (url.length <= MAILTO_MAX) {
+          fitted = url;
           lo = mid + 1;
         } else {
           hi = mid - 1;
         }
       }
-      if (!best) {
-        const shortBody = buildBody(c, '', TEXT.inquiryTruncatedNote);
-        best = { body: shortBody, url: mailtoUrl(c.subject, shortBody) };
+      return fitted;
+    };
+
+    /**
+     * Build the mailto: URL within MAILTO_MAX: shorten the message first; if not even its start
+     * fits, clip the subject and every other field too, and as a last resort send only the
+     * subject and the note. The full text is always available through the copy button.
+     */
+    const fitMailto = (c) => {
+      const body = buildBody(c, c.message, '');
+      const url = mailtoUrl(c.subject, body);
+      if (url.length <= MAILTO_MAX) return { body, url, truncated: false };
+      let fitted = fitMessage(c);
+      if (!fitted) {
+        const clipped = Object.assign({}, c, {
+          subject: clip(c.subject, MAILTO_FIELD_MAX),
+          lines: c.lines.map((line) => clip(line, MAILTO_FIELD_MAX)),
+        });
+        fitted = fitMessage(clipped) || mailtoUrl(clipped.subject, buildBody({ lines: [] }, '', TEXT.inquiryTruncatedNote));
       }
-      return { body, url: best.url, truncated: true };
+      return { body, url: fitted, truncated: true };
     };
 
     const copyPayload = (c) => {

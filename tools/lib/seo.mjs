@@ -72,17 +72,42 @@ export function compact(value) {
   return value;
 }
 
+/**
+ * Work page meta description (≈ 120 chars): the one-line summary plus the search context it lacks —
+ * client, category, role, brand and person ('… — DEMO 모터스 광고 컬러 그레이딩 · TONECRAFT 컬러리스트 임민규').
+ */
 export function workDescription(site, work) {
-  if (work.summary) return clip(work.summary, 160);
-  if (work.notes?.length) return clip(work.notes[0], 160);
-  const who = [site.brand.name, site.brand.person].filter(Boolean).join(' ');
+  const who = [site.brand.name, site.brand.role, site.brand.person].filter(Boolean).join(' ');
+  const context = [work.client, work.categoryLabel, work.role || '컬러 그레이딩'].filter(Boolean).join(' ');
+  const lead = work.summary || work.notes?.[0] || '';
+  if (lead) {
+    const tail = ` — ${[context, who].filter(Boolean).join(' · ')}`;
+    return `${clip(lead, Math.max(40, 120 - tail.length))}${tail}`.replace(/\s+/g, ' ').trim();
+  }
   const parts = [work.client, work.categoryLabel, work.year].filter((p) => p !== null && p !== undefined && p !== '');
   return clip(`${work.title}${parts.length ? ` (${parts.join(' · ')})` : ''} — ${work.role} 작업. ${who}`.trim(), 160);
+}
+
+/** og:image:type from the file name ('' when unknown, e.g. an extension-less CDN URL). */
+export function imageTypeOf(src) {
+  const ext = String(src || '').split(/[?#]/)[0].split('.').pop().toLowerCase();
+  return { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', avif: 'image/avif' }[ext] || '';
+}
+
+/** Share-image fields: absolute/relative URL + its pixel size and type (Facebook renders the first share without waiting). */
+function ogImageFields(siteUrl, root, src, size) {
+  return {
+    ogImage: pageUrlFor(siteUrl, root, src),
+    ogImageWidth: size?.w || null,
+    ogImageHeight: size?.h || null,
+    ogImageType: imageTypeOf(src),
+  };
 }
 
 /**
  * Page meta (spec §4). kind: 'home' | 'work' | '404'.
  * root: the page's paths.root (used for relative og:image when siteUrl is empty).
+ * description is the search snippet; ogDescription the (shorter) text for KakaoTalk/Facebook cards.
  */
 export function buildMeta({ site, kind, work = null, preview = false, root = '' }) {
   const { siteUrl, brand, seo } = site;
@@ -92,42 +117,49 @@ export function buildMeta({ site, kind, work = null, preview = false, root = '' 
     robots: preview || kind === '404' ? 'noindex,nofollow' : 'index,follow',
   };
   const defaultOg = seo.ogImage;
+  const defaultSize = seo.ogImageSize || null;
   const defaultAlt = [brand.name, [brand.person, brand.role].filter(Boolean).join(' ')].filter(Boolean).join(' — ');
   if (kind === 'work' && work) {
     const media = work.media || {};
     const canonical = siteUrl ? `${siteUrl}/works/${work.slug}/` : '';
-    const img = media.og?.src || media.poster?.src || defaultOg;
+    const img = media.og?.src ? media.og : media.poster?.src ? media.poster : null;
+    const description = workDescription(site, work);
     return {
       ...base,
       title: `${work.title} — ${work.role || '컬러 그레이딩'} | ${brand.name}`,
-      description: workDescription(site, work),
+      description,
+      ogDescription: work.summary ? clip(work.summary, 160) : description,
       canonical,
       ogUrl: canonical,
-      ogImage: pageUrlFor(siteUrl, root, img),
-      ogImageAlt: media.og || media.poster ? work.alt : defaultAlt,
+      ...ogImageFields(siteUrl, root, img ? img.src : defaultOg, img ? { w: img.w, h: img.h } : defaultSize),
+      ogImageAlt: img ? work.alt : defaultAlt,
       ogType: media.main || media.embed ? 'video.other' : 'website',
     };
   }
   if (kind === '404') {
+    const description = seo.description || brand.tagline;
     return {
       ...base,
       title: `페이지를 찾을 수 없습니다 | ${brand.name}`,
-      description: seo.description || brand.tagline,
+      description,
+      ogDescription: description,
       canonical: '',
       ogUrl: '',
-      ogImage: pageUrlFor(siteUrl, root, defaultOg),
+      ...ogImageFields(siteUrl, root, defaultOg, defaultSize),
       ogImageAlt: defaultAlt,
       ogType: 'website',
     };
   }
   const canonical = siteUrl ? `${siteUrl}/` : '';
+  const description = seo.description || brand.tagline;
   return {
     ...base,
     title: seo.title || brand.name,
-    description: seo.description || brand.tagline,
+    description,
+    ogDescription: description,
     canonical,
     ogUrl: canonical,
-    ogImage: pageUrlFor(siteUrl, root, defaultOg),
+    ...ogImageFields(siteUrl, root, defaultOg, defaultSize),
     ogImageAlt: defaultAlt,
     ogType: 'website',
   };
@@ -144,9 +176,11 @@ export function homeJsonLd(site) {
   const { siteUrl, brand, contact, seo, services, business } = site;
   const id = (frag) => (siteUrl ? `${siteUrl}/#${frag}` : undefined);
   const serviceNames = services.map((s) => s.title);
+  // Organization: a freelancer without a street address is not a LocalBusiness (Google requires `address` there;
+  // schema.org deprecated the ProfessionalService subtype). With business.address filled in → LocalBusiness.
   const business0 = compact({
     '@context': 'https://schema.org',
-    '@type': 'ProfessionalService',
+    '@type': business.address ? 'LocalBusiness' : 'Organization',
     '@id': id('business'),
     name: brand.name,
     alternateName: brand.person ? `${brand.name} ${brand.person}` : undefined,
@@ -158,7 +192,6 @@ export function homeJsonLd(site) {
     logo: siteUrl ? absUrl(siteUrl, 'assets/img/icon-512.png') : undefined,
     founder: person(site),
     knowsAbout: serviceNames.length ? serviceNames : undefined,
-    serviceType: serviceNames.length ? serviceNames : undefined,
     sameAs: contact.kmongUrl ? [contact.kmongUrl] : undefined,
     address: business.address ? { '@type': 'PostalAddress', streetAddress: business.address, addressCountry: 'KR' } : undefined,
     hasOfferCatalog: services.length
@@ -180,7 +213,7 @@ export function homeJsonLd(site) {
     url: siteUrl ? `${siteUrl}/` : undefined,
     inLanguage: 'ko-KR',
     description: seo.description || undefined,
-    publisher: siteUrl ? { '@id': id('business') } : { '@type': 'ProfessionalService', name: brand.name },
+    publisher: siteUrl ? { '@id': id('business') } : { '@type': 'Organization', name: brand.name },
   });
   return [business0, website];
 }
@@ -211,7 +244,8 @@ export function workJsonLd(site, work) {
         name: work.title,
         description,
         thumbnailUrl: thumbs.map((t) => absUrl(siteUrl, t)),
-        uploadDate: work.date || `${work.year}-01-01`,
+        // ISO 8601 with the Korean time zone (a date alone is ambiguous to Google); year-only → 1 January
+        uploadDate: `${work.date || `${work.year}-01-01`}T00:00:00+09:00`,
         duration: media.main ? isoDuration(media.main.duration) || undefined : undefined,
         contentUrl: media.main ? absUrl(siteUrl, media.main.src) : undefined,
         embedUrl: media.embed ? plainEmbedUrl(media.embed) : undefined,

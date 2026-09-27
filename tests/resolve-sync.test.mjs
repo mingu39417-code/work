@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
-import { resolveWorkMedia, resolveReel, manifestIndex, hiddenReasons, referencedMediaFiles, loadManifest } from '../tools/lib/media-resolve.mjs';
+import { resolveWorkMedia, resolveReel, reelHiddenReason, manifestIndex, hiddenReasons, referencedMediaFiles, loadManifest } from '../tools/lib/media-resolve.mjs';
 import { syncMedia, cleanStalePages, addMarker, hasMarker, GENERATED_MARKER } from '../tools/lib/sync.mjs';
 import { normalizeSite, normalizeWorks } from '../tools/lib/content.mjs';
 import { BASE_SITE, makeProject, addMedia, tmpDir, write, fakeWebp } from './helpers.mjs';
@@ -22,12 +22,14 @@ test('resolveWorkMedia: poster srcset, comparisons, stills, preview; dims from h
     src: 'media/works/a/poster.jpg',
     w: 1920,
     h: 1080,
+    // the 1920 WebP replaces the q2 JPEG in srcset; poster.jpg stays src (and the OG / thumbnail fallback)
     srcset: [
       { src: 'media/works/a/poster-640.webp', w: 640 },
       { src: 'media/works/a/poster-1280.webp', w: 1280 },
-      { src: 'media/works/a/poster.jpg', w: 1920 },
+      { src: 'media/works/a/poster-1920.webp', w: 1920 },
     ],
   });
+  assert.ok(referencedMediaFiles(m).includes('media/works/a/poster.jpg'));
   assert.deepEqual(m.preview, { src: 'media/works/a/preview.mp4', w: null, h: null });
   assert.deepEqual(m.main, { src: 'media/works/a/main.mp4', w: null, h: null, duration: null });
   assert.deepEqual(m.og, { src: 'media/works/a/og.jpg', w: 1200, h: 630 });
@@ -36,8 +38,10 @@ test('resolveWorkMedia: poster srcset, comparisons, stills, preview; dims from h
   assert.equal(m.comparisons[0].caption, 'LOG → 최종');
   assert.equal(m.comparisons[0].beforeLabel, 'LOG');
   assert.equal(m.comparisons[1].afterLabel, 'AFTER');
+  // phones (≈ 1000-1170 device px) get the 1280 step instead of jumping to 1920
   assert.deepEqual(m.comparisons[0].after.srcset, [
     { src: 'media/works/a/ba-1-after-960.webp', w: 960 },
+    { src: 'media/works/a/ba-1-after-1280.webp', w: 1280 },
     { src: 'media/works/a/ba-1-after.webp', w: 1920 },
   ]);
   assert.equal(m.comparisons[0].video, null);
@@ -96,21 +100,29 @@ test('resolveWorkMedia: variant as large as the original is deduped from srcset'
   assert.deepEqual(m.stills, []);
 });
 
-test('resolveReel: publish false → all null; embed hides full', async () => {
+test('resolveReel: publish false → all null; consent pending → preview only; embed hides full', async () => {
   const root = await makeProject({ reel: true });
   const mediaDir = path.join(root, 'media');
-  let site = normalizeSite(BASE_SITE, iss());
+  let site = normalizeSite({ ...BASE_SITE, reel: { consent: 'granted' } }, iss());
   let r = await resolveReel({ mediaDir, site });
   assert.equal(r.full.src, 'media/reel/reel.mp4');
   assert.equal(r.loop.src, 'media/reel/reel-loop.mp4');
   assert.equal(r.poster.src, 'media/reel/poster.jpg');
   assert.equal(r.fps, 24);
-  site = normalizeSite({ ...BASE_SITE, reel: { embed: { type: 'vimeo', id: '1' } } }, iss());
+  site = normalizeSite({ ...BASE_SITE, reel: { consent: 'not-required', embed: { type: 'vimeo', id: '1' } } }, iss());
   r = await resolveReel({ mediaDir, site });
   assert.equal(r.full, null);
   assert.equal(r.embed.pageUrl, 'https://vimeo.com/1');
-  site = normalizeSite({ ...BASE_SITE, reel: { publish: false } }, iss());
+  // a reel is cut from client work: without a consent decision it stays out of production, like a work
+  site = normalizeSite({ ...BASE_SITE, reel: {} }, iss());
+  assert.equal(site.reel.consent, 'pending');
+  assert.match(reelHiddenReason(site.reel), /pending/);
   r = await resolveReel({ mediaDir, site });
+  assert.deepEqual([r.loop, r.full, r.poster, r.embed], [null, null, null, null]);
+  r = await resolveReel({ mediaDir, site, preview: true });
+  assert.equal(r.loop.src, 'media/reel/reel-loop.mp4');
+  site = normalizeSite({ ...BASE_SITE, reel: { publish: false, consent: 'granted' } }, iss());
+  r = await resolveReel({ mediaDir, site, preview: true });
   assert.deepEqual([r.loop, r.full, r.poster, r.embed], [null, null, null, null]);
 });
 

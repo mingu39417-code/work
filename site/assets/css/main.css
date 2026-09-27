@@ -22,6 +22,7 @@
   --line: rgba(255, 255, 255, 0.1);
   --line-strong: rgba(255, 255, 255, 0.18);
   --line-hover: rgba(255, 255, 255, 0.34);
+  --line-field: #6b6b6b; /* form field boundary: ≥ 3:1 on --surface and --bg (WCAG 1.4.11) */
   --text: #ededed;
   --muted: #a6a6a6;
   --faint: #8a8a8a; /* ≥ 4.5:1 on --bg / --surface / --surface-2 — do not go darker for text */
@@ -250,15 +251,30 @@ main:focus {
   column-gap: 10px;
 }
 
+/* The separator's ', ' text stays for screen readers (a pause); visually it is pushed out of a short rule. */
 .meta .sep {
   display: inline-block;
   width: 12px;
   height: 1px;
   overflow: hidden;
+  text-indent: 100%;
+  white-space: nowrap;
   background: currentColor;
   opacity: 0.6;
-  font-size: 0;
   color: inherit;
+}
+
+/* a separator travels with the part after it (see metaHtml), level with that part's first line */
+.meta__part {
+  display: inline-flex;
+  align-items: flex-start;
+  column-gap: 10px;
+  min-width: 0;
+}
+
+.meta__part > .sep {
+  flex: none;
+  margin-top: calc(0.75em - 0.5px); /* middle of the first line (labels use line-height 1.5) */
 }
 
 .container {
@@ -808,26 +824,56 @@ main:focus {
   background: #000;
 }
 
-/* neutral black gradients for legibility — no tint over footage */
+/* Neutral black scrims for legibility — no tint over footage. The reel is unknown in advance and may hold
+   white-cyc product / beauty / sky shots, so the scrims are sized for a flat white frame:
+   text ≥ 4.5:1 (eyebrow, lead, header), headline ≥ 3:1. */
 .hero--reel .hero__media::after,
 .hero--poster .hero__media::after {
   content: '';
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(to top, #101010 0%, rgba(16, 16, 16, 0.86) 10%, rgba(0, 0, 0, 0.55) 36%, rgba(0, 0, 0, 0.18) 62%, rgba(0, 0, 0, 0) 78%),
-    linear-gradient(to bottom, rgba(0, 0, 0, 0.55) 0, rgba(0, 0, 0, 0) 200px);
+    linear-gradient(to top, #101010 0, rgba(16, 16, 16, 0.88) 64px, rgba(16, 16, 16, 0) 200px),
+    linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.7) 0,
+      rgba(0, 0, 0, 0.62) calc(var(--header-h) + var(--banner-h)),
+      rgba(0, 0, 0, 0) calc(var(--header-h) + var(--banner-h) + 96px)
+    );
   pointer-events: none;
 }
 
+/* phones: the text block covers anywhere from ~45 % to ~85 % of the hero height, so a height-percentage
+   gradient cannot follow it. This scrim is anchored to the text block instead (it fades in over the 112px
+   above the eyebrow and runs past the hero bottom, which clips it); the footage above the text stays undimmed. */
+@media (max-width: 719.98px) {
+  .hero--reel .hero__content::before,
+  .hero--poster .hero__content::before {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    top: calc(var(--header-h) + var(--banner-h) - 72px);
+    right: 0;
+    bottom: -200px;
+    left: 0;
+    background: linear-gradient(to bottom, rgba(0, 0, 0, 0) 0, rgba(0, 0, 0, 0.64) 112px, rgba(0, 0, 0, 0.68) 100%);
+    pointer-events: none;
+  }
+}
+
 @media (min-width: 720px) {
-  /* text sits bottom-left: a soft neutral shade from the left keeps it legible on bright footage */
+  /* text sits bottom-left: a neutral shade from the left and the bottom; the right of the frame stays clear */
   .hero--reel .hero__media::after,
   .hero--poster .hero__media::after {
     background:
-      linear-gradient(to top, #101010 0%, rgba(16, 16, 16, 0.86) 10%, rgba(0, 0, 0, 0.5) 34%, rgba(0, 0, 0, 0.12) 60%, rgba(0, 0, 0, 0) 74%),
-      linear-gradient(to right, rgba(0, 0, 0, 0.42) 0%, rgba(0, 0, 0, 0.2) 38%, rgba(0, 0, 0, 0) 62%),
-      linear-gradient(to bottom, rgba(0, 0, 0, 0.6) 0, rgba(0, 0, 0, 0) 220px);
+      linear-gradient(to top, #101010 0%, rgba(16, 16, 16, 0.86) 10%, rgba(0, 0, 0, 0.55) 40%, rgba(0, 0, 0, 0) 80%),
+      linear-gradient(to right, rgba(0, 0, 0, 0.62) 0%, rgba(0, 0, 0, 0.55) 45%, rgba(0, 0, 0, 0) 75%),
+      linear-gradient(
+        to bottom,
+        rgba(0, 0, 0, 0.7) 0,
+        rgba(0, 0, 0, 0.62) calc(var(--header-h) + var(--banner-h) - 12px),
+        rgba(0, 0, 0, 0) calc(var(--header-h) + var(--banner-h) + 114px)
+      );
   }
 }
 
@@ -871,7 +917,17 @@ main:focus {
 
 .hero--reel .hero__title,
 .hero--poster .hero__title {
-  text-shadow: 0 2px 40px rgba(0, 0, 0, 0.35);
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.35),
+    0 2px 40px rgba(0, 0, 0, 0.35);
+}
+
+/* small text over footage: a tight shadow keeps glyph edges readable on bright frames */
+.hero--reel .hero__eyebrow,
+.hero--reel .hero__lead,
+.hero--poster .hero__eyebrow,
+.hero--poster .hero__lead {
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
 }
 
 .hero__lead {
@@ -1149,13 +1205,14 @@ main:focus {
   fill: var(--accent);
 }
 
+/* finite on purpose (WCAG 2.2.2): nothing blinks or pulses for more than 5 s without a way to stop it */
 @media (prefers-reduced-motion: no-preference) {
   .scope__trace {
-    animation: scope-live 4.8s ease-in-out infinite alternate;
+    animation: scope-live 4.8s ease-in-out;
   }
 
   .notfound .scope__dot {
-    animation: blink 1.6s steps(2, jump-none) infinite;
+    animation: blink 1.6s steps(2, jump-none) 3;
   }
 }
 
@@ -1399,6 +1456,33 @@ main:focus {
   .work-grid__item--span-12 .work-card__media {
     aspect-ratio: 2.2 / 1;
   }
+
+  .work-grid__item--span-12 .work-card__media--wide {
+    aspect-ratio: var(--card-ar, 2.2);
+  }
+}
+
+/* Wide scope frames (2.39:1 …, bars already cut off by the media tool) keep their own ratio wherever the card
+   has the row to itself — phones, full-row cards at 2-up, the 12-column feature above — instead of being
+   letterboxed again inside a 16:9 box. Side-by-side cards and filtered views keep the shared 16:9 frame. */
+@media (max-width: 639.98px) {
+  .work-card__media.work-card__media--wide {
+    aspect-ratio: var(--card-ar, 16 / 9);
+  }
+}
+
+@media (min-width: 640px) and (max-width: 1099.98px) {
+  .work-grid:not(:has(> [hidden])) > .work-grid__item--span-12 .work-card__media--wide,
+  .work-grid:not(:has(> [hidden])) > .work-grid__item--md-full .work-card__media--wide {
+    aspect-ratio: var(--card-ar, 16 / 9);
+  }
+}
+
+/* 2-up tier: a card that would sit alone in its row takes the full row (templates mark it; "전체" view only) */
+@media (min-width: 640px) and (max-width: 1099.98px) {
+  .work-grid:not(:has(> [hidden])) > .work-grid__item--md-full {
+    grid-column: 1 / -1;
+  }
 }
 
 /* while a category filter is active (JS hides items), use a uniform grid */
@@ -1449,8 +1533,36 @@ main:focus {
 }
 
 .work-card__media[data-fit='contain'] .work-card__poster,
-.work-card__media[data-fit='contain'] .work-card__preview {
+.work-card__media[data-fit='contain'] .work-card__preview,
+.work-card__media[data-fit='tall'] .work-card__poster,
+.work-card__media[data-fit='tall'] .work-card__preview {
   object-fit: contain;
+}
+
+/* portrait frames: the whole frame stays visible; the empty sides get a dark, blurred fill of the same poster */
+.work-card__backdrop {
+  position: absolute;
+  inset: -8%;
+  width: 116%;
+  max-width: none;
+  height: 116%;
+  object-fit: cover;
+  filter: blur(24px) brightness(0.4);
+  pointer-events: none;
+}
+
+.work-card__ratio {
+  position: absolute;
+  z-index: 1;
+  top: 10px;
+  left: 10px;
+  padding: 3px 8px 2px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--text);
+  font-size: 10.5px;
+  line-height: 1.4;
+  pointer-events: none;
 }
 
 .work-card__preview {
@@ -1636,6 +1748,7 @@ main:focus {
 /* ---------- Before / After ---------- */
 .compare-list {
   display: grid;
+  align-items: start;
   gap: clamp(48px, 6vw, 88px) var(--grid-gap);
 }
 
@@ -1697,13 +1810,15 @@ main:focus {
   display: block;
 }
 
-/* visually hidden but focusable (keyboard + screen readers); pointer drags are handled on the frame */
+/* Visually hidden but focusable (keyboard + screen readers); pointer drags are handled on the frame.
+   It covers the whole frame so that focusing it scrolls the whole comparison into view (a 1px strip
+   brought only the frame's bottom edge on screen) and gives touch screen readers a findable target. */
 .compare__range {
   position: absolute;
+  top: 0;
   left: 0;
-  bottom: 0;
   width: 100%;
-  height: 1px;
+  height: 100%;
   margin: 0;
   padding: 0;
   opacity: 0;
@@ -1780,9 +1895,14 @@ main:focus {
   }
 }
 
+/* Labels are owner-written (default BEFORE / AFTER): their case is kept as typed — 'S-Log3', 'Rec.709' are
+   names, not decoration. Each pill stays in its own half of the frame (long labels are cut with an ellipsis;
+   the range's aria-label carries the full text). */
 .compare__label {
   position: absolute;
   top: clamp(10px, 1.4vw, 16px);
+  max-width: calc(50% - 28px);
+  overflow: hidden;
   padding: 5px 10px 4px;
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.6);
@@ -1794,8 +1914,16 @@ main:focus {
   font-weight: 500;
   line-height: 1.4;
   letter-spacing: 0.12em;
-  text-transform: uppercase;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   pointer-events: none;
+}
+
+/* Hangul labels: Pretendard, no mono tracking (same rule as .label--ko) */
+.compare__label.label--ko {
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
 }
 
 .compare__label--before {
@@ -2408,6 +2536,11 @@ main:focus {
   color: var(--faint);
 }
 
+/* a span inside <summary>: gets neither the heading balance nor the paragraph pretty rule */
+.faq__text {
+  text-wrap: balance;
+}
+
 .faq__icon {
   display: grid;
   place-items: center;
@@ -2679,7 +2812,7 @@ main:focus {
   min-width: 0;
   min-height: 52px;
   padding: 13px 16px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--line-field);
   border-radius: 6px;
   background: var(--bg);
   color: var(--text);
@@ -2707,9 +2840,17 @@ main:focus {
   outline-offset: 2px;
 }
 
+/* Chrome/Edge: the date field's calendar button is its own Tab stop, where the input matches only
+   :focus-within — without this rule that stop shows no focus indicator */
+input[type='date'].field__input:focus-within {
+  border-color: rgba(255, 255, 255, 0.55);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 @media (hover: hover) {
   .field__input:hover:not(:focus) {
-    border-color: var(--line-hover);
+    border-color: var(--faint);
   }
 }
 
@@ -2820,8 +2961,12 @@ input[type='date'].field__input::-webkit-date-and-time-value {
   line-height: 1.6;
 }
 
+/* empty: collapsed but still rendered — a live region that is display:none until its first message
+   is often not announced (VoiceOver) */
 .inquiry__status:empty {
-  display: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
 .inquiry[data-state='error'] .inquiry__status {
@@ -2909,7 +3054,8 @@ input[type='date'].field__input::-webkit-date-and-time-value {
 .site-footer__nav a {
   display: inline-flex;
   align-items: center;
-  min-height: 40px;
+  min-width: 44px; /* short labels (작업 · 소개 · 문의) still get a 44px target */
+  min-height: 44px;
   font-size: 15px;
   color: var(--muted);
   transition: color var(--dur) var(--ease);
@@ -3004,11 +3150,23 @@ body[data-page='404'] main {
   padding-bottom: clamp(24px, 4vw, 48px);
 }
 
+/* title band + player + summary. Phones: title → summary → player (order); ≥900px see below. */
+.work-top {
+  display: flex;
+  flex-direction: column;
+}
+
 .work-hero {
   display: grid;
   justify-items: start;
   gap: 14px;
-  padding: clamp(24px, 4vw, 56px) 0 clamp(32px, 4vw, 56px);
+  padding-top: clamp(24px, 4vw, 56px);
+}
+
+.work-hero__bar {
+  display: grid;
+  justify-items: start;
+  gap: 14px;
 }
 
 .back-link {
@@ -3051,22 +3209,76 @@ body[data-page='404'] main {
   letter-spacing: -0.03em;
 }
 
-.work-hero__summary {
+.work-top__summary {
+  order: 1;
   max-width: 38em;
-  margin-top: 4px;
+  margin-top: 18px;
   font-size: clamp(16px, 1.4vw, 19px);
   line-height: 1.7;
   color: var(--muted);
 }
 
 .work-player {
+  order: 2;
   position: relative;
+  width: 100%;
   max-width: calc(86vh * var(--ar, 1.7778));
   max-width: calc(86svh * var(--ar, 1.7778));
-  margin-inline: auto;
+  margin: clamp(32px, 4vw, 56px) auto 0;
   overflow: hidden;
   border-radius: var(--radius-media);
   background: #000;
+}
+
+/* Desktop / laptop: the footage is the product, so the whole frame and its controls fit the first screen
+   (1366×768 included). A compact band — back link and meta on one row, then the title (~150px) — sits
+   above a player sized to the height that is left; the summary follows the player. The band and summary
+   share the player's width (at least 640px, for vertical frames) so their left edges line up with it. */
+@media (min-width: 900px) {
+  .work-top {
+    --player-h: max(100vh - var(--header-h) - var(--banner-h) - 170px, 420px);
+    max-width: max(calc(var(--player-h) * var(--ar, 1.7778)), 640px);
+    margin-inline: auto;
+  }
+
+  @supports (height: 100svh) {
+    .work-top {
+      --player-h: max(100svh - var(--header-h) - var(--banner-h) - 170px, 420px);
+    }
+  }
+
+  .work-hero {
+    gap: 8px;
+    padding: 20px 0 24px;
+  }
+
+  .work-hero__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0 24px;
+    width: 100%;
+  }
+
+  .back-link {
+    margin-bottom: 0;
+  }
+
+  .work-hero__title {
+    max-width: 22em;
+    font-size: clamp(28px, 3.4vw, 52px);
+  }
+
+  .work-top__summary {
+    order: 3;
+    margin-top: clamp(20px, 2vw, 28px);
+  }
+
+  .work-player {
+    max-width: calc(var(--player-h) * var(--ar, 1.7778));
+    margin-top: 0;
+  }
 }
 
 .work-player__poster,
@@ -3081,7 +3293,9 @@ body[data-page='404'] main {
   background: #000;
 }
 
-.work-player__video {
+.work-player__video,
+.work-player--embed .work-player__poster {
+  /* a poster cut free of baked-in letterbox bars sits inside the uncropped frame, like the video itself */
   object-fit: contain;
 }
 
@@ -3577,6 +3791,39 @@ a.work-pager__link:focus-visible {
   background: #000;
 }
 
+/* Landscape phones (the orientation people rotate to for a reel): no title row eating ~60px of a ~375px
+   height — the close button moves into a 44px column beside the video (not over it: iOS draws its inline
+   volume control at the video's top-right), and the width respects the notch safe areas. */
+@media (orientation: landscape) and (max-height: 500px) {
+  .video-dialog {
+    width: min(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px), (100vh - 16px) * 16 / 9 + 56px);
+    width: min(100vw - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px), (100svh - 16px) * 16 / 9 + 56px);
+  }
+
+  .video-dialog__inner {
+    grid-template-columns: minmax(0, 1fr) 44px;
+    align-items: start;
+  }
+
+  .video-dialog__bar {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .video-dialog__stage {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  /* still names the dialog (aria-labelledby) */
+  .video-dialog__title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    clip-path: inset(50%);
+  }
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .video-dialog[open] {
     animation: dialog-in 350ms var(--ease);
@@ -3674,6 +3921,32 @@ a.work-pager__link:focus-visible {
   }
 }
 
+/* ---------- Forced colors (Windows High Contrast) ---------- */
+/* Backgrounds become Canvas, so state drawn only with a background disappears; restore it with system
+   colours and a non-colour cue. */
+@media (forced-colors: active) {
+  .nav-toggle__bars span,
+  .meta .sep,
+  .compare__handle {
+    background: CanvasText;
+  }
+
+  .filter[aria-pressed='true'] {
+    border-width: 2px;
+    text-decoration: underline;
+    text-underline-offset: 4px;
+  }
+
+  .filter[aria-pressed='true']::before {
+    background: CanvasText;
+  }
+
+  .site-nav__link[aria-current='true'] {
+    text-decoration: underline;
+    text-underline-offset: 6px;
+  }
+}
+
 /* ---------- Reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -3703,6 +3976,10 @@ a.work-pager__link:focus-visible {
   .hero {
     min-height: 0;
     background: none;
+  }
+
+  .hero__content::before {
+    content: none;
   }
 
   .js [data-reveal] {

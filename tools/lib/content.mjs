@@ -1,6 +1,7 @@
 // Content loading, validation and normalization (spec §2.3).
 // Templates receive only normalized data: every string is a string, every list an array — never undefined.
 import path from 'node:path';
+import fsp from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { isFile } from './fsutil.mjs';
@@ -37,10 +38,6 @@ function strOr(v, d) {
   return s === '' ? d : s;
 }
 
-function bool(v, d = false) {
-  return typeof v === 'boolean' ? v : d;
-}
-
 function list(v) {
   if (Array.isArray(v)) return v;
   if (v === null || v === undefined || v === '') return [];
@@ -59,6 +56,23 @@ function numOrNull(v) {
   if (v === null || v === undefined || v === '') return null;
   const n = typeof v === 'number' ? v : Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+function posNum(v) {
+  const n = numOrNull(v);
+  return n !== null && n >= 0 ? n : null;
+}
+
+/**
+ * A boolean option. Anything but true/false (e.g. publish: 'true' in quotes) falls back to the default with a
+ * warning — silently reading 'true' as false would contradict what the owner typed.
+ */
+function flag(v, d, where, issues) {
+  if (typeof v === 'boolean') return v;
+  if (v !== undefined && v !== null && v !== '') {
+    issues.warnings.push(`${where}: ${JSON.stringify(v)} — 따옴표 없이 true 또는 false 로 적으세요 (지금은 ${d}로 처리합니다).`);
+  }
+  return d;
 }
 
 function isHttpsUrl(s) {
@@ -192,6 +206,71 @@ function normUrlField(v, where, issues, { trimSlash = false } = {}) {
   return s;
 }
 
+/** Longest hero background loop (site.reel.loopDuration, seconds); the default is 20. */
+export const REEL_LOOP_MAX = 40;
+export const REEL_LOOP_DEFAULT = 20;
+
+function normLoopDuration(v, issues) {
+  if (v === undefined || v === null || v === '') return REEL_LOOP_DEFAULT;
+  const n = numOrNull(v);
+  if (n === null || n < 1 || n > REEL_LOOP_MAX) {
+    issues.warnings.push(`site.reel.loopDuration "${v}" — 1~${REEL_LOOP_MAX} 사이의 초 단위 숫자여야 합니다. 기본값 ${REEL_LOOP_DEFAULT}초를 사용합니다.`);
+    return REEL_LOOP_DEFAULT;
+  }
+  return n;
+}
+
+/**
+ * Showreel consent (same rule as works): a reel is usually cut from client work, so it is only published once
+ * its consent is 'granted' or 'not-required'. Unset → 'pending' (reel stays out of site/, preview shows it).
+ */
+function normReelConsent(v, issues) {
+  if (v === undefined || v === null || v === '') return 'pending';
+  const s = str(v);
+  if (!CONSENT_VALUES.includes(s)) {
+    issues.errors.push(`site.reel.consent "${s}" — 'granted' | 'pending' | 'not-required' 중 하나여야 합니다.`);
+    return 'pending';
+  }
+  return s;
+}
+
+/**
+ * hero.primaryCta.href: a section ('#contact'), a site-relative path, or an https: / mailto: / tel: link.
+ * Anything else (javascript:, http:, a bare 'kmong.com/…' that would become a broken relative link) is an error.
+ */
+function normCtaHref(v, issues) {
+  const s = str(v);
+  if (!s) return '#contact';
+  if (/^#[\w-]*$/.test(s)) return s;
+  if (/^mailto:[^\s]+$/i.test(s) || /^tel:\+?[\d\s()-]+$/i.test(s)) return s;
+  if (/^https:\/\//i.test(s)) {
+    if (isHttpsUrl(s)) return s;
+  } else if (/^(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|kr|co|io|me|app|dev|site|link|page|so|ai)(?:[/?#:]|$)/i.test(s)) {
+    issues.errors.push(`site.hero.primaryCta.href "${s}" — 주소 앞에 https:// 를 붙여 주세요 (예: 'https://${s}').`);
+    return '#contact';
+  } else if (!/^[a-z][a-z0-9+.-]*:/i.test(s) && !s.startsWith('//') && !s.startsWith('/') && !/\s/.test(s)) {
+    return s; // site-relative, e.g. 'works/brand-film-2026/'
+  }
+  issues.errors.push(`site.hero.primaryCta.href "${s}" — '#contact' 같은 섹션 주소나 https:// 로 시작하는 전체 주소만 쓸 수 있습니다.`);
+  return '#contact';
+}
+
+/**
+ * Search Console / 서치어드바이저 verification: the consoles show a whole <meta … content="…"> tag with a copy
+ * button — accept that and keep only the code. A value that still is not a code is dropped (a broken tag helps no one).
+ */
+function normVerification(v, where, issues) {
+  let s = str(v);
+  if (!s) return '';
+  const m = s.match(/content\s*=\s*["']([^"']+)["']/i);
+  if (m) s = m[1].trim();
+  if (!/^[A-Za-z0-9_-]{8,128}$/.test(s)) {
+    issues.warnings.push(`${where} — 확인 코드 형식이 아니라서 넣지 않았습니다. <meta …> 태그의 content="…" 안의 값만 적으세요.`);
+    return '';
+  }
+  return s;
+}
+
 export function normalizeSite(raw, issues = { errors: [], warnings: [] }) {
   const r = obj(raw);
   const brand = obj(r.brand);
@@ -214,11 +293,17 @@ export function normalizeSite(raw, issues = { errors: [], warnings: [] }) {
 
   const primaryCta = obj(hero.primaryCta);
   const reelCta = obj(hero.reelCta);
+  const ctaHref = normCtaHref(primaryCta.href, issues);
 
   const outSections = {};
   for (const [key, eyebrow] of Object.entries(DEFAULT_SECTIONS)) {
     const s = obj(sections[key]);
     outSections[key] = { eyebrow: strOr(s.eyebrow, eyebrow), title: str(s.title), lead: str(s.lead) };
+    if (key === 'works') {
+      // shown while 0 works are public; empty strings fall back to the template's built-in copy
+      const e = obj(s.empty);
+      outSections.works.empty = { title: str(e.title), body: str(e.body), cta: str(e.cta) };
+    }
   }
 
   const categories = [];
@@ -289,14 +374,20 @@ export function normalizeSite(raw, issues = { errors: [], warnings: [] }) {
       eyebrow: str(hero.eyebrow),
       title: strList(hero.title).slice(0, 3),
       lead: str(hero.lead),
-      primaryCta: { label: strOr(primaryCta.label, '프로젝트 문의하기'), href: strOr(primaryCta.href, '#contact') },
+      primaryCta: { label: strOr(primaryCta.label, '프로젝트 문의하기'), href: ctaHref },
       reelCta: { label: strOr(reelCta.label, '쇼릴 보기') },
     },
     reel: {
       publish: reel.publish !== false,
+      consent: normReelConsent(reel.consent, issues),
       title: strOr(reel.title, `${strOr(brand.name, 'TONECRAFT')} Showreel`),
       embed: reelEmbed,
       fps: fps && fps > 0 && fps <= 120 ? fps : 24,
+      // media tool (hero background loop + poster)
+      autoCrop: flag(reel.autoCrop, true, 'site.reel.autoCrop', issues),
+      posterTime: posNum(reel.posterTime),
+      loopStart: posNum(reel.loopStart),
+      loopDuration: normLoopDuration(reel.loopDuration, issues),
     },
     sections: outSections,
     categories,
@@ -335,8 +426,9 @@ export function normalizeSite(raw, issues = { errors: [], warnings: [] }) {
       description: str(seo.description),
       keywords: strList(seo.keywords),
       ogImage: strOr(seo.ogImage, 'assets/img/og-default.jpg'),
-      googleVerification: str(seo.googleVerification),
-      naverVerification: str(seo.naverVerification),
+      ogImageSize: null, // { w, h } — filled by the build from the image file (og:image:width/height)
+      googleVerification: normVerification(seo.googleVerification, 'site.seo.googleVerification', issues),
+      naverVerification: normVerification(seo.naverVerification, 'site.seo.naverVerification', issues),
     },
     analytics: { ga4Id: str(analytics.ga4Id) },
   };
@@ -360,7 +452,10 @@ export function normalizeSite(raw, issues = { errors: [], warnings: [] }) {
 
 const WORK_DEFAULT_ROLE = '컬러 그레이딩';
 
-export function normalizeWorks(rawList, site, issues = { errors: [], warnings: [] }) {
+/**
+ * rawList: works.mjs entries, then works.private.mjs entries from index `privateFrom` on (tagged source: 'private').
+ */
+export function normalizeWorks(rawList, site, issues = { errors: [], warnings: [] }, { privateFrom = Infinity } = {}) {
   if (!Array.isArray(rawList)) {
     issues.errors.push('content/works.mjs — export default 는 배열이어야 합니다 ([ { slug, title, ... } ]).');
     return [];
@@ -371,7 +466,8 @@ export function normalizeWorks(rawList, site, issues = { errors: [], warnings: [
   rawList.forEach((raw, i) => {
     const w = obj(raw);
     const slug = str(w.slug);
-    const where = `works[${i}]${slug ? ` (${slug})` : ''}`;
+    const isPrivate = i >= privateFrom;
+    const where = `${isPrivate ? `works.private[${i - privateFrom}]` : `works[${i}]`}${slug ? ` (${slug})` : ''}`;
     let bad = false;
     if (!slug) {
       issues.errors.push(`${where}: slug가 없습니다.`);
@@ -432,10 +528,6 @@ export function normalizeWorks(rawList, site, issues = { errors: [], warnings: [
       };
     });
 
-    const posNum = (v) => {
-      const n = numOrNull(v);
-      return n !== null && n >= 0 ? n : null;
-    };
     const posDur = (v, d) => {
       const n = numOrNull(v);
       return n !== null && n > 0 ? n : d;
@@ -457,10 +549,11 @@ export function normalizeWorks(rawList, site, issues = { errors: [], warnings: [
         .map((cr) => ({ role: str(cr.role), name: str(cr.name) }))
         .filter((cr) => cr.name),
       camera: str(w.camera),
-      featured: bool(w.featured),
+      featured: flag(w.featured, false, `${where}.featured`, issues),
       order: numOrNull(w.order) ?? 0,
-      publish: w.publish === true,
+      publish: flag(w.publish, false, `${where}.publish`, issues),
       consent,
+      source: isPrivate ? 'private' : 'works',
       video,
       comparisons,
       alt: strOr(w.alt, `${title} 컬러 그레이딩 장면`),
@@ -468,9 +561,10 @@ export function normalizeWorks(rawList, site, issues = { errors: [], warnings: [
       previewStart: posNum(w.previewStart),
       previewDuration: posDur(w.previewDuration, 6),
       baTimes: list(w.baTimes).map(posNum),
-      baVideo: bool(w.baVideo),
+      baVideo: flag(w.baVideo, false, `${where}.baVideo`, issues),
       baVideoStart: posNum(w.baVideoStart),
       baVideoDuration: posDur(w.baVideoDuration, 8),
+      autoCrop: flag(w.autoCrop, true, `${where}.autoCrop`, issues), // media tool: cut baked-in black bars
     };
     if (!bad) out.push(work);
   });
@@ -493,42 +587,86 @@ export function sortWorks(works) {
 
 async function importFresh(file) {
   const url = `${pathToFileURL(file).href}?t=${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const mod = await import(url);
+  return import(url);
+}
+
+/** The owner's optional, gitignored list of works that must not reach the public repository (consent pending …). */
+export const PRIVATE_WORKS_FILE = 'works.private.mjs';
+
+/**
+ * Import one content module and return its default export (undefined + an error when unusable).
+ * Checks first that the file is UTF-8: a file saved as ANSI/CP949 (older Windows editors) imports fine but every
+ * Korean string turns into '�'.
+ */
+async function loadModule(file, label, shape, issues) {
+  let buf;
+  try {
+    buf = await fsp.readFile(file);
+  } catch (err) {
+    issues.errors.push(`${label}를 읽지 못했습니다 — ${err.message}`);
+    return undefined;
+  }
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(buf);
+  } catch {
+    issues.errors.push(`${label} 파일이 UTF-8로 저장되지 않았습니다 (한글이 깨집니다) — 메모장/VS Code에서 인코딩을 UTF-8로 바꿔 다시 저장하세요.`);
+    return undefined;
+  }
+  let mod;
+  try {
+    mod = await importFresh(file);
+  } catch (err) {
+    issues.errors.push(`${label}를 읽지 못했습니다 — ${describeImportError(err, file)}`);
+    return undefined;
+  }
+  if (!('default' in mod)) {
+    issues.errors.push(`${label}에 export default ${shape} 가 없습니다 — 'export const …' 가 아니라 'export default ${shape}' 로 적으세요.`);
+    return undefined;
+  }
   return mod.default;
 }
 
 /**
- * Load + validate + normalize <root>/content/site.mjs and works.mjs.
- * Returns { site, works, errors, warnings }. Never throws for content problems.
+ * Load + validate + normalize <root>/content/site.mjs, works.mjs and the optional works.private.mjs.
+ * Returns { site, works, errors, warnings, privateCount }. Never throws for content problems.
  */
 export async function loadContent(root) {
   const issues = { errors: [], warnings: [] };
   const siteFile = path.join(root, 'content', 'site.mjs');
   const worksFile = path.join(root, 'content', 'works.mjs');
+  const privateFile = path.join(root, 'content', PRIVATE_WORKS_FILE);
   let rawSite = null;
   let rawWorks = [];
+  let rawPrivate = [];
   if (!(await isFile(siteFile))) {
     issues.errors.push(`content/site.mjs 파일이 없습니다 (${siteFile}).`);
   } else {
-    try {
-      rawSite = await importFresh(siteFile);
-    } catch (err) {
-      issues.errors.push(`content/site.mjs를 읽지 못했습니다 — ${describeImportError(err, siteFile)}`);
-    }
+    rawSite = (await loadModule(siteFile, 'content/site.mjs', '{ … }', issues)) ?? null;
   }
-  if (await isFile(worksFile)) {
-    try {
-      rawWorks = await importFresh(worksFile);
-    } catch (err) {
-      issues.errors.push(`content/works.mjs를 읽지 못했습니다 — ${describeImportError(err, worksFile)}`);
-      rawWorks = [];
+  const worksList = async (file, label) => {
+    const v = await loadModule(file, label, '[ … ]', issues);
+    if (v === undefined) return [];
+    if (!Array.isArray(v)) {
+      issues.errors.push(`${label} — export default 는 배열이어야 합니다 ([ { slug, title, ... } ]).`);
+      return [];
     }
-  } else {
-    issues.warnings.push('content/works.mjs 파일이 없어 작업 목록이 비어 있습니다.');
-  }
+    return v;
+  };
+  if (await isFile(worksFile)) rawWorks = await worksList(worksFile, 'content/works.mjs');
+  else issues.warnings.push('content/works.mjs 파일이 없어 작업 목록이 비어 있습니다.');
+  if (await isFile(privateFile)) rawPrivate = await worksList(privateFile, `content/${PRIVATE_WORKS_FILE}`);
   const site = normalizeSite(rawSite || {}, issues);
-  const works = normalizeWorks(rawWorks ?? [], site, issues);
-  return { site, works, errors: issues.errors, warnings: issues.warnings };
+  const works = normalizeWorks([...rawWorks, ...rawPrivate], site, issues, { privateFrom: rawWorks.length });
+  // works.mjs is committed (public on GitHub): identifying details of works without consent belong in the private file
+  const exposed = works.filter(
+    (w) => w.source !== 'private' && (w.publish !== true || w.consent === 'pending') && (w.client || w.credits.length || w.notes.length || w.video),
+  );
+  if (exposed.length) {
+    issues.warnings.push(
+      `content/works.mjs 의 비공개·동의 대기 작업 ${exposed.length}개(${exposed.map((w) => w.slug).join(', ')})에 클라이언트·크레딧·메모·영상 링크가 적혀 있습니다 — works.mjs 는 저장소(GitHub)에 올라가 누구나 볼 수 있습니다. 이 작업들은 content/${PRIVATE_WORKS_FILE} (저장소에 올라가지 않음)로 옮기세요.`,
+    );
+  }
+  return { site, works, errors: issues.errors, warnings: issues.warnings, privateCount: rawPrivate.length };
 }
 
 /**

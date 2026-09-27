@@ -6,13 +6,15 @@ import os from 'node:os';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { runFfmpeg } from './ffmpeg.mjs';
-import { isFile, writeFileAtomic, rmrf } from './fsutil.mjs';
+import { isFile, writeFileAtomic, rmrf, walkFiles } from './fsutil.mjs';
 import { loadContent } from './content.mjs';
 
 export const W = 1280;
 export const H = 720;
 export const FPS = 24;
 const TAG709 = ['-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709', '-color_range', 'tv'];
+/** 2.39:1 scope blanking baked into the 16:9 frame, as colorists deliver it (the media tool crops it where needed). */
+const LETTERBOX = 'drawbox=x=0:y=0:w=iw:h=92:color=black:t=fill,drawbox=x=0:y=628:w=iw:h=92:color=black:t=fill';
 
 // ---------------------------------------------------------------------------------------------
 // looks (3D LUTs)
@@ -304,7 +306,7 @@ export class SceneRenderer {
       cur = `${label}v`;
     }
     const grain = which === 'after' ? 'noise=c0s=5:c0f=t' : 'noise=c0s=3:c0f=t';
-    const bars = scene.letterbox ? ',drawbox=x=0:y=0:w=iw:h=92:color=black:t=fill,drawbox=x=0:y=628:w=iw:h=92:color=black:t=fill' : '';
+    const bars = scene.letterbox ? `,${LETTERBOX}` : '';
     parts.push(`[${cur}]format=yuv420p,${grain}${bars}[${label}]`);
     return parts;
   }
@@ -485,8 +487,10 @@ export const DEMO_WORKS = [
   },
 ];
 
+export const DEMO_WORKS_HEADER = '// 데모 프로젝트 작업 목록';
+
 function worksModule(works) {
-  return `// 데모 프로젝트 작업 목록 — tools/demo.mjs 가 자동으로 만든 파일입니다 (실제 작업이 아닙니다).
+  return `${DEMO_WORKS_HEADER} — tools/demo.mjs 가 자동으로 만든 파일입니다 (실제 작업이 아닙니다).
 // 형식은 content/works.mjs 와 같습니다. 다시 만들려면: npm run demo
 export default ${JSON.stringify(works, null, 2)};
 `;
@@ -501,6 +505,7 @@ export function mapCategories(works, categories) {
 const FALLBACK_SITE = `export default {
   brand: { name: 'TONECRAFT', person: '임민규', role: '컬러리스트', tagline: '장면의 온도를 설계합니다' },
   contact: { email: 'crafttone3@gmail.com', kmongUrl: '' },
+  reel: { consent: 'not-required' },
   categories: [
     { id: 'commercial', label: '광고' },
     { id: 'music-video', label: '뮤직비디오' },
@@ -512,15 +517,66 @@ const FALLBACK_SITE = `export default {
 `;
 
 /**
+ * The demo's site.mjs: the repository's settings, with the synthetic demo reel marked as needing no consent
+ * (the real site.mjs keeps its own reel consent, typically 'pending' until the owner checks the reel).
+ */
+export function demoSiteModule(repoSiteText) {
+  const text = String(repoSiteText || '');
+  if ((text.match(/^export default\b/gm) || []).length !== 1) return FALLBACK_SITE;
+  return (
+    `${text.replace(/^export default\b/m, 'const site =')}\n` +
+    '// 데모 쇼릴은 합성 영상이라 공개 동의가 필요 없습니다 (tools/demo.mjs 가 추가한 줄)\n' +
+    "export default { ...site, reel: { ...(site.reel || {}), consent: 'not-required' } };\n"
+  );
+}
+
+/** Files the demo generator itself writes into raw/works/<demo-slug>/ (anything else there is not ours). */
+const OS_JUNK = /(?:^|\/)(?:\.DS_Store|Thumbs\.db|desktop\.ini)$/i;
+const DEMO_RAW_FILE = /^(?:main\.mp4|poster\.jpg|(?:before|after)-\d+\.(?:png|mp4)|\.demo-complete|stills\/still-\d+\.jpg)$/;
+
+/** true when dir is missing or holds only files the demo generator writes (safe to delete and re-render). */
+async function isDemoOwned(dir) {
+  return (await walkFiles(dir)).every((rel) => DEMO_RAW_FILE.test(rel) || OS_JUNK.test(rel));
+}
+
+/**
+ * Refuse to turn a real project into a demo: the demo overwrites content/site.mjs + works.mjs and replaces the
+ * raw reel. Returns a Korean reason, or '' when <root> is empty / an earlier demo.
+ */
+export async function demoRootProblem(root) {
+  const worksFile = path.join(root, 'content', 'works.mjs');
+  if (await isFile(worksFile)) {
+    const head = (await fsp.readFile(worksFile, 'utf8')).replace(/^\uFEFF/, '');
+    if (!head.startsWith(DEMO_WORKS_HEADER)) return `${worksFile} 가 데모가 만든 파일이 아닙니다 (실제 작업 목록으로 보입니다)`;
+  } else if (await isFile(path.join(root, 'content', 'site.mjs'))) {
+    return `${path.join(root, 'content')} 에 데모가 만들지 않은 사이트 설정이 있습니다`;
+  }
+  const reelDir = path.join(root, 'raw', 'reel');
+  const foreignReel = (await walkFiles(reelDir)).filter((f) => f !== DEMO_REEL_FILE && f !== DEMO_REEL_MARKER && !OS_JUNK.test(f));
+  if (foreignReel.length) return `${reelDir} 에 데모가 만들지 않은 파일이 있습니다 (${foreignReel.join(', ')})`;
+  for (const d of DEMO_WORKS) {
+    const dir = path.join(root, 'raw', 'works', d.work.slug);
+    if (!(await isDemoOwned(dir))) return `${dir} 에 데모가 만들지 않은 파일이 있습니다`;
+  }
+  return '';
+}
+
+const DEMO_REEL_FILE = 'tonecraft-demo-reel.mp4';
+/** Bump when the demo reel recipe changes: an existing .demo gets the new reel without --force. */
+const DEMO_REEL_VERSION = '2';
+const DEMO_REEL_MARKER = '.demo-reel-version';
+
+/**
  * Create <root>/content + <root>/raw with synthetic footage.
  * Returns { works, created, skipped } (raw work folders generated / reused).
  */
 export async function generateDemoProject({ root, repoRoot, ffmpeg, force = false, log = () => {}, concurrency }) {
+  const problem = await demoRootProblem(root);
+  if (problem) throw new Error(`데모는 .demo 같은 별도 폴더에만 만들 수 있습니다 — ${problem}. 다른 --root 를 지정하세요.`);
   await fsp.mkdir(path.join(root, 'content'), { recursive: true });
   const repoSite = path.join(repoRoot, 'content', 'site.mjs');
   const siteDst = path.join(root, 'content', 'site.mjs');
-  if (await isFile(repoSite)) await fsp.copyFile(repoSite, siteDst);
-  else await writeFileAtomic(siteDst, FALLBACK_SITE);
+  await writeFileAtomic(siteDst, (await isFile(repoSite)) ? demoSiteModule(await fsp.readFile(repoSite, 'utf8')) : FALLBACK_SITE);
   const { site } = await loadContent(root);
   const works = mapCategories(
     DEMO_WORKS.map((d) => ({ publish: true, consent: 'granted', ...d.work })),
@@ -579,11 +635,14 @@ async function renderAll({ root, ffmpeg, force, log, concurrency, tmp, works }) 
     }),
   );
 
-  // showreel: 4 × 3 s from the rendered mains, cross-dissolved, with a quiet ambient pad
+  // showreel: 4 × 3 s from the rendered mains, cross-dissolved, with a quiet ambient pad — delivered like a
+  // colorist's scope reel: 2.39:1 bars baked into the whole 16:9 frame (the hero loop and poster get them cropped)
   const reelDir = path.join(root, 'raw', 'reel');
-  const reelFile = path.join(reelDir, 'tonecraft-demo-reel.mp4');
-  if (force || created > 0 || !(await isFile(reelFile))) {
-    await rmrf(reelDir);
+  const reelFile = path.join(reelDir, DEMO_REEL_FILE);
+  const reelMarker = path.join(reelDir, DEMO_REEL_MARKER);
+  const reelVersion = (await fsp.readFile(reelMarker, 'utf8').catch(() => '')).trim();
+  if (force || created > 0 || !(await isFile(reelFile)) || reelVersion !== DEMO_REEL_VERSION) {
+    await fsp.rm(reelFile, { force: true }); // only the demo's own reel — demoRootProblem() made sure nothing else is here
     await fsp.mkdir(reelDir, { recursive: true });
     const picks = ['demo-dusk-drive', 'demo-neon-night', 'demo-golden-hour', 'demo-dawn-short'].map((s) => path.join(rawWorks, s, 'main.mp4'));
     const seg = 3.45; // 4 × 3.45 s − 3 × 0.6 s dissolves = 12 s
@@ -599,7 +658,7 @@ async function renderAll({ root, ffmpeg, force, log, concurrency, tmp, works }) 
       cur = `x${i}`;
     }
     const total = n(picks.length * seg - (picks.length - 1) * fade);
-    fc.push(`[${cur}]fade=t=in:st=0:d=0.5,fade=t=out:st=${n(total - 0.6)}:d=0.6[vout]`);
+    fc.push(`[${cur}]fade=t=in:st=0:d=0.5,fade=t=out:st=${n(total - 0.6)}:d=0.6,${LETTERBOX}[vout]`);
     fc.push(
       `sine=f=110:d=${total}[s1];sine=f=164.81:d=${total}[s2];sine=f=220:d=${total}[s3];anoisesrc=d=${total}:c=pink:a=0.02[s4];` +
         `[s1][s2][s3][s4]amix=inputs=4:weights='1 0.6 0.35 1',volume=0.35,afade=t=in:d=1.5,afade=t=out:st=${n(total - 1.5)}:d=1.5[aout]`,
@@ -608,6 +667,7 @@ async function renderAll({ root, ffmpeg, force, log, concurrency, tmp, works }) 
     args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '17', '-pix_fmt', 'yuv420p', ...TAG709, '-c:a', 'aac', '-b:a', '160k', '-t', String(total), '-movflags', '+faststart', reelFile);
     const t0 = Date.now();
     await runFfmpeg(ffmpeg, args);
+    await fsp.writeFile(reelMarker, DEMO_REEL_VERSION);
     log(`원본 생성: 쇼릴 ${total.toFixed(1)}초 (${((Date.now() - t0) / 1000).toFixed(1)}초)`);
   }
 

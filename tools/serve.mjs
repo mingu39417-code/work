@@ -1,23 +1,25 @@
 #!/usr/bin/env node
 // npm run serve → serve site/ on http://localhost:4173 (production output)
-//   node tools/serve.mjs [--root <dir>] [--port <n>] [--host <h>] [--preview]
-// --preview overlays .preview/ over site/ and maps /media/* to <root>/media/* (draft media).
+//   node tools/serve.mjs [--root <dir>] [--port <n>] [--host <h>] [--lan] [--preview]
+// --preview overlays .preview/ over site/ and maps /media/* to <root>/media/* (draft media). It holds works without
+// publishing consent, so it listens on this computer only unless --lan (or --host) is given.
 import path from 'node:path';
 import { checkNodeVersion, parseArgs, ArgError } from './lib/args.mjs';
 
 checkNodeVersion();
 
-const HELP = `사용법: node tools/serve.mjs [--preview] [--port <번호>] [--host <주소>] [--root <폴더>]
-  (옵션 없음)   site/ (배포본)을 http://localhost:4173 에서 보여줌
-  --preview     .preview/ (비공개 작업 포함) + 원본 media/ 로 미리보기
+const HELP = `사용법: node tools/serve.mjs [--preview] [--lan] [--port <번호>] [--host <주소>] [--root <폴더>]
+  (옵션 없음)   site/ (배포본)을 http://localhost:4173 에서 보여줌 (같은 와이파이의 휴대폰에서도 접속 가능)
+  --preview     .preview/ (비공개 작업 포함) + 원본 media/ 로 미리보기 — 이 컴퓨터에서만 열림
+  --lan         미리보기를 같은 네트워크의 휴대폰에서도 열기 (그 네트워크의 모든 기기에 비공개 작업이 보임)
   --port <n>    포트 (기본 4173, 사용 중이면 다음 번호)
-  --host <h>    바인드 주소 (기본 0.0.0.0 — 같은 와이파이의 휴대폰에서도 접속 가능)
+  --host <h>    바인드 주소 (기본: 배포본 0.0.0.0, 미리보기 127.0.0.1)
   --root <폴더> 다른 프로젝트 폴더 (예: .demo)`;
 
 let args;
 try {
   args = parseArgs(process.argv.slice(2), {
-    flags: { root: 'string', port: 'number', host: 'string', preview: 'boolean', quiet: 'boolean', help: 'boolean' },
+    flags: { root: 'string', port: 'number', host: 'string', lan: 'boolean', preview: 'boolean', quiet: 'boolean', help: 'boolean' },
   });
 } catch (err) {
   if (err instanceof ArgError) {
@@ -47,7 +49,9 @@ const notFound = preview ? [path.join(previewDir, '404.html'), path.join(siteDir
 
 const out = (s = '') => process.stdout.write(`${s}\n`);
 const server = createStaticServer({ layers, notFound, log: args.values.quiet ? null : (line) => out(`  ${line}`) });
-const host = args.values.host || '0.0.0.0';
+// the preview shows unconsented client work: this computer only, unless the owner asks for the LAN explicitly
+const lan = Boolean(args.values.lan);
+const host = args.values.host || (preview && !lan ? '127.0.0.1' : '0.0.0.0');
 const requested = args.values.port ?? 4173;
 
 let port;
@@ -65,6 +69,9 @@ const shownHost = host === '0.0.0.0' || host === '::' ? 'localhost' : host;
 out(`  이 컴퓨터    ${c.cyan(`http://${shownHost}:${port}/`)}`);
 if (host === '0.0.0.0' || host === '::') {
   for (const ip of lanAddresses()) out(`  휴대폰(같은 와이파이)  ${c.cyan(`http://${ip}:${port}/`)}`);
+  if (preview) out(c.yellow('  ! 비공개 작업이 같은 네트워크의 모든 기기에 보입니다 — 집·사무실처럼 믿을 수 있는 와이파이에서만 쓰고, 확인이 끝나면 Ctrl+C 로 닫으세요.'));
+} else if (preview && !args.values.host) {
+  out(c.gray('  휴대폰으로 미리보기: npm run preview -- --lan (같은 네트워크의 모든 기기에 비공개 작업이 보입니다 — 집·사무실 와이파이에서만)'));
 }
 const indexFile = path.join(preview ? previewDir : siteDir, 'index.html');
 if (!(await isFile(indexFile))) {

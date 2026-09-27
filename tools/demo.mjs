@@ -39,6 +39,11 @@ const log = createLogger({ quiet: args.values.quiet });
 const root = args.values.root ? path.resolve(args.values.root) : path.join(REPO_ROOT, '.demo');
 const rel = path.relative(process.cwd(), root) || '.';
 const shown = rel.startsWith('..') ? root : rel;
+// the demo overwrites content/ and raw/reel/ of its root — never the real project
+if (path.relative(REPO_ROOT, root) === '') {
+  log.error(`데모는 .demo 같은 별도 폴더에만 만들 수 있습니다 — ${root} 는 실제 사이트 폴더입니다 (content/works.mjs 와 raw/ 원본이 덮어써집니다). --root 를 빼면 .demo 에 만듭니다.`);
+  process.exit(2);
+}
 
 const tools = await findFfmpeg();
 if (!tools) {

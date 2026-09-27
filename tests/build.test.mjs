@@ -1,12 +1,12 @@
 // End-to-end build tests (need src/templates/index.mjs — skipped until the templates exist).
-import test from 'node:test';
+import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { buildSite } from '../tools/lib/build-site.mjs';
 import { GENERATED_MARKER } from '../tools/lib/sync.mjs';
-import { BASE_SITE, makeProject, work, write, readTree, silentLogger, hasTemplates, REPO } from './helpers.mjs';
+import { BASE_SITE, makeProject, work, write, readTree, silentLogger, hasTemplates, REPO, fakeJpeg } from './helpers.mjs';
 
 const skip = !hasTemplates() && 'src/templates/index.mjs 없음 (템플릿 작성 전)';
 const NOW = new Date('2026-09-27T12:00:00Z');
@@ -147,7 +147,8 @@ test('generated HTML: marker, relative URLs (subfolder-safe), cache-busting, JSO
   assert.match(home, /<link rel="canonical" href="https:\/\/tonecraft\.example\/">/);
   assert.match(page, /"@type":"(?:VideoObject|CreativeWork)"/);
   assert.match(page, /"@type":"BreadcrumbList"/);
-  assert.match(home, /"@type":"ProfessionalService"/);
+  assert.match(home, /"@type":"Organization"/);
+  assert.doesNotMatch(home, /ProfessionalService|serviceType/);
   assert.match(nf, /noindex,nofollow/);
   const manifest = JSON.parse(await fsp.readFile(path.join(site, 'site.webmanifest'), 'utf8'));
   assert.equal(manifest.short_name, 'TONECRAFT');
@@ -239,4 +240,84 @@ test('CLI: build --check exits 0; bad option exits 2 with Korean help', async ()
   p = spawnSync(process.execPath, [path.join(REPO, 'tools', 'build.mjs'), '--root', root], { encoding: 'utf8' });
   assert.equal(p.status, 1);
   assert.match(p.stderr, /slug/);
+});
+
+test('reel consent: pending (the default) keeps the reel out of site/ but in preview; granted publishes it', { skip }, async () => {
+  const root = await consentFixture();
+  let r = await build(root);
+  assert.equal(r.ok, true, r.errors.join('\n'));
+  assert.match(r.reelHidden, /pending/);
+  assert.ok(r.warnings.some((w) => w.includes('쇼릴 숨김') && w.includes("consent: 'granted'")));
+  await assert.rejects(fsp.stat(path.join(root, 'site', 'media', 'reel')));
+  assert.doesNotMatch(await fsp.readFile(path.join(root, 'site', 'index.html'), 'utf8'), /reel-loop\.mp4/);
+  const pv = await build(root, { preview: true });
+  assert.equal(pv.ok, true);
+  assert.match(await fsp.readFile(path.join(root, '.preview', 'index.html'), 'utf8'), /reel-loop\.mp4/);
+  const siteFile = path.join(root, 'content', 'site.mjs');
+  await write(siteFile, `export default ${JSON.stringify({ ...BASE_SITE, siteUrl: 'https://tonecraft.example', reel: { consent: 'granted' } })};`);
+  r = await build(root);
+  assert.equal(r.ok, true);
+  assert.equal(r.reelHidden, '');
+  await fsp.stat(path.join(root, 'site', 'media', 'reel', 'reel-loop.mp4'));
+  assert.match(await fsp.readFile(path.join(root, 'site', 'index.html'), 'utf8'), /reel-loop\.mp4/);
+});
+
+test('a hidden work that cannot be fully removed from site/ fails the build (locked file, hand-made folder)', { skip }, async () => {
+  const root = await consentFixture();
+  const site = path.join(root, 'site');
+  const worksFile = path.join(root, 'content', 'works.mjs');
+  const original = await fsp.readFile(worksFile, 'utf8');
+  await write(worksFile, original.replace('"publish": false', '"publish": true'));
+  assert.equal((await build(root)).ok, true);
+  await fsp.stat(path.join(site, 'media', 'works', SECRET.slug, 'main.mp4'));
+  await write(worksFile, original);
+  // Windows: a video player / Explorer preview holds main.mp4 open → rm fails with EBUSY
+  const realRm = fsp.rm;
+  const locked = mock.method(fsp, 'rm', async function rm(p, opts) {
+    if (String(p).includes(SECRET.slug) && String(p).endsWith('main.mp4')) throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
+    return realRm.call(this, p, opts);
+  });
+  let r;
+  try {
+    r = await build(root);
+  } finally {
+    locked.mock.restore();
+  }
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.some((e) => e.includes(`media/works/${SECRET.slug}/main.mp4`) && e.includes('EBUSY') && e.includes('npm run build')), r.errors.join('\n'));
+  // every other file of the hidden work is still removed (no abort half-way)
+  await assert.rejects(fsp.stat(path.join(site, 'media', 'works', SECRET.slug, 'poster.jpg')));
+  await assert.rejects(fsp.stat(path.join(site, 'works', SECRET.slug)));
+  // lock released → the next build cleans up and succeeds
+  r = await build(root);
+  assert.equal(r.ok, true, r.errors.join('\n'));
+  await assert.rejects(fsp.stat(path.join(site, 'media', 'works', SECRET.slug)));
+
+  // a hand-made (unmarked) folder named like a hidden work is not deleted — and not uploaded as if all was fine
+  await write(path.join(site, 'works', PENDING.slug, 'index.html'), '<!doctype html><p>copied from the old site');
+  r = await build(root);
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.some((e) => e.includes(`site/works/${PENDING.slug}/`)), r.errors.join('\n'));
+  await fsp.stat(path.join(site, 'works', PENDING.slug, 'index.html'));
+});
+
+test('report: baVideo without a comparison video, oversized / HEIC portrait, private works file', { skip: false }, async () => {
+  const root = await makeProject({
+    site: { ...BASE_SITE, about: { paragraphs: ['소개'], portrait: 'assets/img/portrait.jpg' } },
+    works: [work('cmp', { baVideo: true })],
+    media: { cmp: { ba: 1 } },
+  });
+  await write(path.join(root, 'site', 'assets', 'img', 'portrait.jpg'), fakeJpeg(3024, 4032, { app1: 500000 }));
+  await write(path.join(root, 'content', 'works.private.mjs'), `export default ${JSON.stringify([work('secret-one', { consent: 'pending' })])};`);
+  const logger = silentLogger();
+  let r = await buildSite({ root, logger, now: NOW, check: true });
+  assert.equal(r.ok, true, r.errors.join('\n'));
+  assert.ok(r.warnings.some((w) => w.includes('cmp') && w.includes('ba-N.mp4')));
+  assert.ok(r.warnings.some((w) => w.includes('프로필 사진') && w.includes('3024×4032')));
+  assert.ok(logger.lines.some((l) => l.includes('works.private.mjs') && l.includes('1개')));
+  assert.equal(r.hidden.length, 1);
+  await write(path.join(root, 'site', 'assets', 'img', 'me.heic'), 'heic');
+  await write(path.join(root, 'content', 'site.mjs'), `export default ${JSON.stringify({ ...BASE_SITE, about: { paragraphs: ['소개'], portrait: 'assets/img/me.heic' } })};`);
+  r = await build(root, { check: true });
+  assert.ok(r.warnings.some((w) => w.includes('HEIC')));
 });

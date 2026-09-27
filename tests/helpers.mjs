@@ -10,9 +10,13 @@ export const REPO = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 export const TEMPLATES = path.join(REPO, 'src', 'templates', 'index.mjs');
 export const hasTemplates = () => fs.existsSync(TEMPLATES);
 
+/** The binaries the tools use (FFMPEG_PATH / FFPROBE_PATH, else PATH) — tests spawn exactly these. */
+export const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
+export const FFPROBE = process.env.FFPROBE_PATH || (process.env.FFMPEG_PATH ? path.join(path.dirname(process.env.FFMPEG_PATH), `ffprobe${path.extname(process.env.FFMPEG_PATH)}`) : 'ffprobe');
+
 export function hasFfmpeg() {
-  const a = spawnSync(process.env.FFMPEG_PATH || 'ffmpeg', ['-version'], { stdio: 'ignore' });
-  const b = spawnSync(process.env.FFPROBE_PATH || 'ffprobe', ['-version'], { stdio: 'ignore' });
+  const a = spawnSync(FFMPEG, ['-version'], { stdio: 'ignore' });
+  const b = spawnSync(FFPROBE, ['-version'], { stdio: 'ignore' });
   return a.status === 0 && b.status === 0;
 }
 
@@ -130,6 +134,7 @@ export async function addMedia(root, slug, m = {}) {
   const { poster = true, ba = 0, stills = 0, preview = true, main = false, og = true, baVideo = false } = m;
   if (poster) {
     await write(path.join(d, 'poster.jpg'), fakeJpeg(1920, 1080));
+    await write(path.join(d, 'poster-1920.webp'), fakeWebp(1920, 1080));
     await write(path.join(d, 'poster-1280.webp'), fakeWebp(1280, 720));
     await write(path.join(d, 'poster-640.webp'), fakeWebp(640, 360));
   }
@@ -139,6 +144,7 @@ export async function addMedia(root, slug, m = {}) {
   for (let n = 1; n <= ba; n++) {
     for (const side of ['before', 'after']) {
       await write(path.join(d, `ba-${n}-${side}.webp`), fakeWebp(1920, 800));
+      await write(path.join(d, `ba-${n}-${side}-1280.webp`), fakeWebp(1280, 534));
       await write(path.join(d, `ba-${n}-${side}-960.webp`), fakeWebp(960, 400));
     }
     if (baVideo) await write(path.join(d, `ba-${n}.mp4`), Buffer.alloc(256, 5));

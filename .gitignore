@@ -3,6 +3,8 @@
 /media/
 # 미리보기 빌드 (비공개 작업 포함 — 절대 배포/커밋하지 않음)
 /.preview/
+# 공개 동의 전 작업 목록 (content/works.private.mjs — 이 컴퓨터에만 두고 저장소에 올리지 않음)
+/content/*.private.mjs
 # 데모 프로젝트
 /.demo/
 node_modules/

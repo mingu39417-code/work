@@ -94,8 +94,10 @@ export function assetUrl(root, path) {
  * Hash links and relative paths are prefixed with root; absolute URLs are kept.
  */
 export function linkHref(root, href) {
-  const h = String(href || '');
+  const h = String(href || '').trim();
   if (!h) return root || './';
+  // defense in depth (content.mjs already validates): never render a script / data URL as a link
+  if (/^(?:javascript|vbscript|data|file):/i.test(h.replace(/[\u0000- ]/g, ''))) return `${root || ''}#contact`;
   if (isAbsoluteUrl(h)) return h;
   if (h.startsWith('#')) return `${root || ''}${h}`;
   return `${root || ''}${h.replace(/^\.\//, '')}`;
@@ -128,14 +130,17 @@ export function srcsetOf(root, image) {
 /**
  * Pick one URL from an image object, preferring the smallest variant ≥ target width
  * (falls back to the largest available). Used where only a single URL is possible (video poster).
+ * On equal widths the srcset variant (WebP) wins over the full-size JPEG — e.g. a 1080×1920 vertical
+ * poster, whose 'poster-1280.webp' is also 1080 wide.
  */
 export function pickSrc(root, image, target = 1280) {
   if (!image) return '';
   const candidates = arr(image.srcset).filter((s) => s && filled(s.src) && int(s.w));
   if (filled(image.src)) candidates.push({ src: image.src, w: int(image.w) || 1920 });
   if (!candidates.length) return '';
-  candidates.sort((a, b) => int(a.w) - int(b.w));
-  const hit = candidates.find((c) => int(c.w) >= target) || candidates[candidates.length - 1];
+  candidates.sort((a, b) => int(a.w) - int(b.w)); // stable: srcset entries stay ahead of image.src
+  const widest = int(candidates[candidates.length - 1].w);
+  const hit = candidates.find((c) => int(c.w) >= target) || candidates.find((c) => int(c.w) === widest);
   return assetUrl(root, hit.src);
 }
 
@@ -165,9 +170,31 @@ export function joinParts(parts, sep = ' · ') {
   return parts.filter((p) => p !== null && p !== undefined && String(p).trim() !== '').join(sep);
 }
 
+/**
+ * Escaped Korean prose with two line-break fixes that `word-break: keep-all` cannot express:
+ *  - a ' · ' list separator stays with the word before it (a line never starts with '·'):
+ *    '그레이딩 · 카메라 매칭 · 룩 개발 · 리터치'
+ *  - a particle after a closing bracket stays attached (WORD JOINER): '(XML·EDL·AAF 등)와' never breaks before '와'
+ * Use for body text / leads / list items instead of esc().
+ */
+export function krText(value) {
+  return escapeHtml(value)
+    .replace(/ ·(?= )/g, '&nbsp;·')
+    .replace(/([)\]\u300d\u300f\u3009\u300b])(?=[\uac00-\ud7af])/g, '$1&#8288;');
+}
+
 /** true when the text contains Hangul (used to relax letter-spacing on mono labels) */
 export function hasHangul(text) {
   return /[\u1100-\u11ff\u3130-\u318f\uac00-\ud7af]/.test(String(text || ''));
+}
+
+/**
+ * ' lang="en"' for an English-only label ('WORKS', 'GRADE NOTES', 'COLOR GRADING · DI'), '' otherwise.
+ * The page is lang="ko": without it a Korean voice reads (or spells out) the English words (WCAG 3.1.2).
+ */
+export function langAttr(text) {
+  const t = String(text ?? '');
+  return /[A-Za-z]/.test(t) && !hasHangul(t) ? ' lang="en"' : '';
 }
 
 /** class list for a mono label; adds 'label--ko' when the text contains Hangul */
@@ -178,12 +205,14 @@ export function labelClass(text, base = 'label') {
 /**
  * Metadata parts ('광고', 2026) → escaped HTML with a drawn separator.
  * The separator text is ', ' so screen readers pause; CSS renders it as a short rule.
+ * Each separator is wrapped together with the part after it (.meta__part), so when a long client name
+ * wraps, the rule moves with it instead of hanging at the end of a line.
  */
 export function metaHtml(parts) {
   return parts
     .filter((p) => p !== null && p !== undefined && String(p).trim() !== '')
-    .map((p) => `<span>${escapeHtml(p)}</span>`)
-    .join('<span class="sep">, </span>');
+    .map((p, i) => (i === 0 ? `<span>${krText(p)}</span>` : `<span class="meta__part"><span class="sep">, </span><span>${krText(p)}</span></span>`))
+    .join('');
 }
 
 /** Strip whitespace between tags where safe and collapse blank lines (cosmetic). */

@@ -56,7 +56,11 @@ function makeResolver(mediaDir, index) {
       if (vd.w) srcset.push({ src: MEDIA_PREFIX + v, w: vd.w });
     }
     if (d.w) srcset.push({ src: MEDIA_PREFIX + rel, w: d.w });
-    return { src: MEDIA_PREFIX + rel, w: d.w, h: d.h, srcset: dedupeSrcset(srcset) };
+    const out = { src: MEDIA_PREFIX + rel, w: d.w, h: d.h, srcset: dedupeSrcset(srcset) };
+    // letterboxed source: `frame` is the uncropped source size (e.g. an embed player keeps the video's own ratio)
+    const e = index.get(rel);
+    if (e?.crop && e?.frame?.w && e?.frame?.h) Object.assign(out, { crop: e.crop, frame: { w: e.frame.w, h: e.frame.h } });
+    return out;
   };
   const video = async (rel, withDuration = false) => {
     if (!(await has(rel))) return null;
@@ -88,7 +92,8 @@ async function listDir(dir) {
 export async function resolveWorkMedia({ mediaDir, work, index = new Map() }) {
   const r = makeResolver(mediaDir, index);
   const base = `works/${work.slug}`;
-  const poster = await r.image(`${base}/poster.jpg`, [`${base}/poster-640.webp`, `${base}/poster-1280.webp`]);
+  // WebP variants first: dedupeSrcset keeps the first entry per width, so poster.jpg (q2 JPEG) stays src/OG only
+  const poster = await r.image(`${base}/poster.jpg`, [`${base}/poster-640.webp`, `${base}/poster-1280.webp`, `${base}/poster-1920.webp`]);
   const preview = await r.video(`${base}/preview.mp4`);
   const main = work.video ? null : await r.video(`${base}/main.mp4`, true);
   const ogRel = `${base}/og.jpg`;
@@ -105,8 +110,8 @@ export async function resolveWorkMedia({ mediaDir, work, index = new Map() }) {
   ].sort((a, b) => a - b);
   const comparisons = [];
   for (const n of pairNums) {
-    const before = await r.image(`${base}/ba-${n}-before.webp`, [`${base}/ba-${n}-before-960.webp`]);
-    const after = await r.image(`${base}/ba-${n}-after.webp`, [`${base}/ba-${n}-after-960.webp`]);
+    const before = await r.image(`${base}/ba-${n}-before.webp`, [`${base}/ba-${n}-before-960.webp`, `${base}/ba-${n}-before-1280.webp`]);
+    const after = await r.image(`${base}/ba-${n}-after.webp`, [`${base}/ba-${n}-after-960.webp`, `${base}/ba-${n}-after-1280.webp`]);
     if (!before || !after) continue;
     const meta = work.comparisons?.[n - 1] || {};
     comparisons.push({
@@ -133,16 +138,26 @@ export async function resolveWorkMedia({ mediaDir, work, index = new Map() }) {
   return { poster, preview, main, embed: work.video || null, og, comparisons, stills };
 }
 
-/** Resolve the showreel (spec §3.3). reel.publish === false → everything null. */
-export async function resolveReel({ mediaDir, site, index = new Map() }) {
+/** Why the reel stays out of a production build ('' = published). Same consent rule as works. */
+export function reelHiddenReason(cfg) {
+  if (!cfg.publish) return 'reel.publish: false';
+  if (cfg.consent === 'pending') return "reel.consent: 'pending' (공개 동의 확인 전)";
+  return '';
+}
+
+/**
+ * Resolve the showreel (spec §3.3). reel.publish === false → everything null; consent 'pending' → null in
+ * production, shown in preview builds (like a hidden work).
+ */
+export async function resolveReel({ mediaDir, site, index = new Map(), preview = false }) {
   const cfg = site.reel;
   const empty = { loop: null, full: null, poster: null, embed: null, title: cfg.title, fps: cfg.fps };
-  if (!cfg.publish) return empty;
+  if (!cfg.publish || (!preview && reelHiddenReason(cfg))) return empty;
   const r = makeResolver(mediaDir, index);
   return {
     loop: await r.video('reel/reel-loop.mp4'),
     full: cfg.embed ? null : await r.video('reel/reel.mp4', true),
-    poster: await r.image('reel/poster.jpg', ['reel/poster-640.webp', 'reel/poster-1280.webp']),
+    poster: await r.image('reel/poster.jpg', ['reel/poster-640.webp', 'reel/poster-1280.webp', 'reel/poster-1920.webp']),
     embed: cfg.embed || null,
     title: cfg.title,
     fps: cfg.fps,

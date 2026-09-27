@@ -5,7 +5,7 @@ import path from 'node:path';
 import fsp from 'node:fs/promises';
 import { spawn, spawnSync } from 'node:child_process';
 import { runMedia } from '../tools/lib/media-pipeline.mjs';
-import { BASE_SITE, tmpDir, write, hasFfmpeg, silentLogger, work, REPO } from './helpers.mjs';
+import { BASE_SITE, tmpDir, write, hasFfmpeg, silentLogger, work, REPO, FFMPEG, FFPROBE } from './helpers.mjs';
 
 const skip = !hasFfmpeg() && 'ffmpeg/ffprobe 없음';
 
@@ -13,12 +13,12 @@ const skip = !hasFfmpeg() && 'ffmpeg/ffprobe 없음';
 // helpers
 
 function ff(args) {
-  const r = spawnSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y', ...args], { encoding: 'utf8' });
+  const r = spawnSync(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-y', ...args], { encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`ffmpeg ${args.join(' ')}\n${r.stderr}`);
 }
 
 function probeStream(file) {
-  const r = spawnSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_streams', '-of', 'json', file], { encoding: 'utf8' });
+  const r = spawnSync(FFPROBE, ['-v', 'error', '-select_streams', 'v:0', '-show_streams', '-of', 'json', file], { encoding: 'utf8' });
   return JSON.parse(r.stdout).streams[0];
 }
 
@@ -27,7 +27,7 @@ function decodeRgb(file, { matrix, range, seek = 0 }) {
   return new Promise((resolve, reject) => {
     const vf = `scale=in_color_matrix=${matrix}:in_range=${range}:flags=accurate_rnd+full_chroma_int,format=rgb24`;
     const args = ['-hide_banner', '-loglevel', 'error', '-nostdin', ...(seek ? ['-ss', String(seek)] : []), '-i', file, '-frames:v', '1', '-vf', vf, '-f', 'rawvideo', '-'];
-    const child = spawn('ffmpeg', args);
+    const child = spawn(FFMPEG, args);
     const chunks = [];
     let err = '';
     child.stdout.on('data', (d) => chunks.push(d));
@@ -252,9 +252,9 @@ test('media pipeline: color-exact outputs, BT.709 tags, incremental, --force', {
     assertBt709(media('reel', 'reel-loop.mp4'), 'reel-loop.mp4');
     const reel = probeStream(media('reel', 'reel-loop.mp4'));
     assert.equal(reel.width, 1280);
-    const audio = spawnSync('ffprobe', ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', media('reel', 'reel-loop.mp4')], { encoding: 'utf8' });
+    const audio = spawnSync(FFPROBE, ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', media('reel', 'reel-loop.mp4')], { encoding: 'utf8' });
     assert.equal(audio.stdout.trim(), '', 'loop must be muted');
-    const full = spawnSync('ffprobe', ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', media('reel', 'reel.mp4')], { encoding: 'utf8' });
+    const full = spawnSync(FFPROBE, ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', media('reel', 'reel.mp4')], { encoding: 'utf8' });
     assert.equal(full.stdout.trim(), 'aac');
     const m = JSON.parse(await fsp.readFile(media('manifest.json'), 'utf8'));
     assert.equal(m.version, 1);
@@ -331,4 +331,8 @@ test('missing ffmpeg → Korean install help and exit code 1', async () => {
   assert.equal(child.status, 1);
   assert.match(child.stderr, /winget install Gyan\.FFmpeg/);
   assert.match(child.stderr, /brew install ffmpeg/);
+  // path override shown for every shell the owner may use (POSIX VAR=value does nothing in PowerShell/cmd)
+  assert.match(child.stderr, /PowerShell : \$env:FFMPEG_PATH="C:\\ffmpeg\\bin\\ffmpeg\.exe"; /);
+  assert.match(child.stderr, /set "FFMPEG_PATH=C:\\ffmpeg\\bin\\ffmpeg\.exe" && /);
+  assert.match(child.stderr, /FFMPEG_PATH=\/opt\/homebrew\/bin\/ffmpeg /);
 });

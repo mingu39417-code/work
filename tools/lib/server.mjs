@@ -168,7 +168,9 @@ export function createStaticServer({ layers, notFound = [], log = null }) {
       send(req, res, 403, { 'Content-Type': 'text/plain; charset=utf-8' }, 'Forbidden');
       return 403;
     }
-    const hit = await resolve(pathname);
+    // dotfiles are never content (media/.cache.json, .x.tmp-123.mp4, .DS_Store …): answer like a missing file
+    const hidden = pathname.split('/').some((seg) => seg.startsWith('.'));
+    const hit = hidden ? null : await resolve(pathname);
     if (hit?.redirect) {
       send(req, res, 301, { Location: `${url.pathname}/${url.search}`, 'Content-Type': 'text/plain; charset=utf-8' }, 'Moved Permanently');
       return 301;

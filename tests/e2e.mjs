@@ -378,7 +378,8 @@ const homeInfo = {};
     await page.click('[data-hero-toggle]');
     await page.waitForSelector('[data-hero][data-state="paused"]');
     assert((await page.getAttribute('[data-hero-toggle]', 'aria-pressed')) === 'true', 'aria-pressed가 true가 아님');
-    assert((await page.getAttribute('[data-hero-toggle]', 'aria-label')) === '배경 영상 재생', 'aria-label이 "배경 영상 재생"으로 바뀌지 않음');
+    // the name stays constant (APG toggle pattern) — aria-pressed="true" carries the paused state
+    assert((await page.getAttribute('[data-hero-toggle]', 'aria-label')) === '배경 영상 일시정지', 'aria-label이 "배경 영상 일시정지"로 유지되지 않음');
     assert(await page.$eval('[data-hero-video]', (v) => v.paused), '영상이 멈추지 않음');
     await page.click('[data-hero-toggle]');
     await page.waitForSelector('[data-hero][data-state="playing"]', { timeout: 10000 });
@@ -421,6 +422,117 @@ const homeInfo = {};
     await page.waitForSelector('[data-video-dialog][open]');
     await page.mouse.click(8, 8);
     await page.waitForFunction(() => !document.querySelector('[data-video-dialog]').open);
+    return null;
+  });
+
+  await test('히어로: 메뉴 링크(/#contact)로 바로 들어오면 배경 영상을 받지 않고, 위로 올라오면 재생', async () => {
+    if (!homeInfo.hasReel) return skip('쇼릴 없음');
+    const deep = await context.newPage();
+    const loops = [];
+    deep.on('request', (r) => {
+      if (/reel-loop/.test(r.url())) loops.push(r.url());
+    });
+    try {
+      await deep.goto(`${BASE}/#contact`, { waitUntil: 'load' });
+      await deep.waitForFunction(() => document.documentElement.classList.contains('js'));
+      await sleep(3000);
+      assert(!loops.length, `#contact 로 들어왔는데 배경 영상을 받음: ${loops.join(', ')}`);
+      if (!canPlay) return null;
+      await deep.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+      await deep.waitForSelector('[data-hero][data-state="playing"]', { timeout: 15000 });
+    } finally {
+      await deep.close();
+    }
+    return null;
+  });
+
+  await test('히어로 글자: 아주 밝은 화면(흰 배경) 위에서도 대비 확보 (본문 4.5:1, 제목 3:1)', async () => {
+    const low = [];
+    for (const viewport of [{ width: 375, height: 667 }, { width: 1440, height: 900 }]) {
+      const ctx = await newContext(`hero-contrast-${viewport.width}`, { viewport, reducedMotion: 'reduce', deviceScaleFactor: 1 });
+      const p = await ctx.newPage();
+      try {
+        await open(p, '/');
+        if (!(await p.$('.hero--reel, .hero--poster'))) return skip('영상·포스터 히어로 아님 (어두운 그래픽 히어로)');
+        // worst case: a flat, near-white frame behind the text (white cyc, sky, bright product shot)
+        await p.addStyleTag({
+          content: '.hero__video,.hero__poster{visibility:hidden !important} .hero__media{background:#f2f2f2 !important} [data-reveal]{opacity:1 !important;transform:none !important;transition:none !important}',
+        });
+        await sleep(300);
+        const targets = await p.evaluate(() =>
+          [
+            ['.hero__eyebrow', 'eyebrow'],
+            ['.hero__line', 'h1'],
+            ['.hero__lead', 'lead'],
+          ].flatMap(([sel, label]) =>
+            Array.from(document.querySelectorAll(sel))
+              .filter((e) => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden')
+              .map((e) => {
+                const r = e.getBoundingClientRect();
+                const cs = getComputedStyle(e);
+                const size = parseFloat(cs.fontSize);
+                const large = size >= 24 || (size >= 18.66 && Number(cs.fontWeight) >= 700);
+                return { label, x: r.left, y: r.top, w: r.width, h: r.height, color: cs.color, need: large ? 3 : 4.5 };
+              })
+              .filter((t) => t.y < innerHeight && t.y + t.h > 0),
+          ),
+        );
+        const shotA = (await p.screenshot()).toString('base64');
+        // hide only the glyph fill: text-shadow and scrims stay, as on screen
+        await p.addStyleTag({ content: '.hero__eyebrow,.hero__line,.hero__lead{color:transparent !important;-webkit-text-fill-color:transparent !important}' });
+        await sleep(150);
+        const shotB = (await p.screenshot()).toString('base64');
+        const rows = await p.evaluate(
+          async ({ a, b, targets }) => {
+            const decode = async (b64) => {
+              const img = new Image();
+              img.src = `data:image/png;base64,${b64}`;
+              await img.decode();
+              const c = document.createElement('canvas');
+              c.width = img.naturalWidth;
+              c.height = img.naturalHeight;
+              const g = c.getContext('2d');
+              g.drawImage(img, 0, 0);
+              return { W: c.width, H: c.height, d: g.getImageData(0, 0, c.width, c.height).data };
+            };
+            const A = await decode(a);
+            const B = await decode(b);
+            const lin = (c) => ((c /= 255) <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+            const lum = ([r, g, bl]) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(bl);
+            const ratio = (x, y) => {
+              const [l1, l2] = [lum(x), lum(y)].sort((m, n) => n - m);
+              return (l1 + 0.05) / (l2 + 0.05);
+            };
+            return targets.map((t) => {
+              const m = t.color.match(/[\d.]+/g).map(Number);
+              const out = [];
+              for (let y = Math.max(0, Math.floor(t.y)); y < Math.min(A.H, Math.ceil(t.y + t.h)); y++) {
+                for (let x = Math.max(0, Math.floor(t.x)); x < Math.min(A.W, Math.ceil(t.x + t.w)); x++) {
+                  const i = (y * A.W + x) * 4;
+                  const pa = [A.d[i], A.d[i + 1], A.d[i + 2]];
+                  const pb = [B.d[i], B.d[i + 1], B.d[i + 2]];
+                  if (Math.abs(pa[0] - pb[0]) + Math.abs(pa[1] - pb[1]) + Math.abs(pa[2] - pb[2]) < 30) continue; // not a glyph pixel
+                  const fg = m.length === 4 ? m.slice(0, 3).map((c, k) => c * m[3] + pb[k] * (1 - m[3])) : m.slice(0, 3);
+                  out.push(ratio(fg, pb));
+                }
+              }
+              out.sort((p1, p2) => p1 - p2);
+              return { label: t.label, need: t.need, n: out.length, p10: out.length ? out[Math.floor(out.length * 0.1)] : 0 };
+            });
+          },
+          { a: shotA, b: shotB, targets },
+        );
+        for (const label of ['eyebrow', 'h1', 'lead']) {
+          if (!rows.some((r) => r.label === label)) low.push(`${viewport.width}px ${label}: 첫 화면에서 찾지 못함`);
+        }
+        for (const r of rows) {
+          if (r.n < 20 || r.p10 < r.need) low.push(`${viewport.width}px ${r.label}: ${r.p10.toFixed(2)}:1 (필요 ${r.need}:1, 글자 픽셀 ${r.n})`);
+        }
+      } finally {
+        await ctx.close();
+      }
+    }
+    assert(!low.length, `밝은 화면에서 글자 대비 부족: ${low.join(' | ')}`);
     return null;
   });
 
@@ -507,7 +619,12 @@ const homeInfo = {};
     near(await frame.evaluate((el) => parseFloat(el.style.getPropertyValue('--pos'))), 0, 0.01, 'Home 키 후 --pos');
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('ArrowRight');
-    near(await frame.evaluate((el) => parseFloat(el.style.getPropertyValue('--pos'))), 1, 0.01, '→ 두 번 후 --pos');
+    near(await frame.evaluate((el) => parseFloat(el.style.getPropertyValue('--pos'))), 4, 0.01, '→ 두 번 후 --pos (2%씩)');
+    await page.keyboard.press('Shift+ArrowRight');
+    near(await frame.evaluate((el) => parseFloat(el.style.getPropertyValue('--pos'))), 10, 0.01, 'Shift+→ 후 --pos (10% 눈금)');
+    const [beforeLabel, afterLabel] = await fig.$$eval('.compare__label', (els) => els.map((el) => el.textContent.trim()));
+    const valuetext = await range.getAttribute('aria-valuetext');
+    assert(valuetext === `${beforeLabel} 10% · ${afterLabel} 90%`, `aria-valuetext: ${valuetext}`);
     const focusRing = await page.evaluate(() => {
       const h = document.activeElement.parentElement.querySelector('[data-compare-handle]');
       const g = h.querySelector('.compare__grip') || h;
@@ -753,10 +870,16 @@ const homeInfo = {};
           const r = p?.getBoundingClientRect();
           return r ? r.width / r.height : 0;
         })(),
+        // the frame the page declares (media w/h — 9:16 and 4:3 works are legitimate)
+        frameRatio: (() => {
+          const m = /aspect-ratio:\s*(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/.exec(document.querySelector('.work-player')?.getAttribute('style') || '');
+          return m ? Number(m[1]) / Number(m[2]) : 0;
+        })(),
       }));
       assert(info.h1 === w.title, `${w.href}: 제목 "${info.h1}"`);
       assert(info.video || info.facade || info.poster, `${w.href}: 영상·임베드·포스터가 모두 없음`);
-      assert(info.playerRatio > 1 && info.playerRatio < 3, `${w.href}: 플레이어 비율 ${info.playerRatio.toFixed(2)}`);
+      assert(info.frameRatio > 0.4 && info.frameRatio < 3, `${w.href}: 플레이어 프레임 비율 ${info.frameRatio.toFixed(2)}`);
+      near(info.playerRatio, info.frameRatio, info.frameRatio * 0.02, `${w.href}: 플레이어 비율이 영상 프레임 비율과 다름`);
       if (info.video) {
         const r = await resolves(page, info.video);
         assert(r.status === 200, `${w.href}: 영상 ${r.url} → HTTP ${r.status}`);
