@@ -1,0 +1,41 @@
+{
+  "name": "TONECRAFT — 임민규 컬러리스트",
+  "short_name": "TONECRAFT",
+  "description": "컬러리스트 임민규의 컬러 그레이딩 · DI 포트폴리오. 광고, 뮤직비디오, 영화·단편, 브랜디드 영상의 색보정과 카메라 매칭, 룩 개발·LUT 제작, 뷰티 리터치를 작업합니다.",
+  "lang": "ko",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "browser",
+  "background_color": "#101010",
+  "theme_color": "#101010",
+  "icons": [
+    {
+      "src": "assets/img/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "assets/img/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "assets/img/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "assets/img/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "assets/img/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

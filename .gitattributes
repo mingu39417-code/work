@@ -1,0 +1,32 @@
+# 줄바꿈은 저장소에서 항상 LF (Windows에서도 동일하게 빌드되도록)
+* text=auto eol=lf
+
+# 바이너리 (줄바꿈 변환·diff 금지)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.avif binary
+*.gif binary
+*.ico binary
+*.bmp binary
+*.tif binary
+*.tiff binary
+*.dpx binary
+*.mp4 binary
+*.m4v binary
+*.mov binary
+*.mxf binary
+*.mkv binary
+*.webm binary
+*.avi binary
+*.mp3 binary
+*.wav binary
+*.aac binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.pdf binary
+*.zip binary

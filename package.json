@@ -1,0 +1,20 @@
+{
+  "name": "tonecraft-site",
+  "version": "1.0.0",
+  "description": "TONECRAFT (임민규 · 컬러리스트) 포트폴리오 사이트 — 정적 사이트 빌드 도구",
+  "private": true,
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "check": "node tools/build.mjs --check",
+    "preview": "node tools/build.mjs --preview && node tools/serve.mjs --preview",
+    "serve": "node tools/serve.mjs",
+    "media": "node tools/media.mjs",
+    "demo": "node tools/demo.mjs",
+    "test": "node --test"
+  }
+}

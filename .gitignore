@@ -1,0 +1,13 @@
+# 원본·처리 미디어 (용량이 커서 git에 올리지 않음)
+/raw/
+/media/
+# 미리보기 빌드 (비공개 작업 포함 — 절대 배포/커밋하지 않음)
+/.preview/
+# 데모 프로젝트
+/.demo/
+node_modules/
+npm-debug.log*
+.DS_Store
+Thumbs.db
+desktop.ini
+/package-lock.json

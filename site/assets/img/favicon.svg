@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- TONECRAFT favicon: vectorscope ring + skin-tone line (mark.svg) on a dark tile -->
+  <rect width="32" height="32" rx="7" fill="#101010"/>
+  <g transform="translate(16 16) scale(0.84) translate(-16 -16)">
+    <circle cx="16" cy="16" r="13" fill="none" stroke="#ededed" stroke-width="3.1"/>
+    <line x1="16" y1="16" x2="10.01" y2="6.77" stroke="#e3a46f" stroke-width="3.81" stroke-linecap="round"/>
+    <circle cx="16" cy="16" r="2.62" fill="#ededed"/>
+  </g>
+</svg>
