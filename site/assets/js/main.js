@@ -341,8 +341,8 @@
         if (next >= 0xdc00 && next <= 0xdfff) {
           out += s[i] + s[i + 1];
           i += 1;
-        } else out += '�';
-      } else if (c >= 0xdc00 && c <= 0xdfff) out += '�';
+        } else out += '\uFFFD';
+      } else if (c >= 0xdc00 && c <= 0xdfff) out += '\uFFFD';
       else out += s[i];
     }
     return out;
