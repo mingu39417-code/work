@@ -13,3 +13,5 @@ npm-debug.log*
 Thumbs.db
 desktop.ini
 /package-lock.json
+# 크몽 마케터 기록 — 주간 통계·매출·원고·요청서 (영업 정보라 저장소에 올리지 않음)
+/marketing/

@@ -15,6 +15,7 @@
     "serve": "node tools/serve.mjs",
     "media": "node tools/media.mjs",
     "demo": "node tools/demo.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "marketer": "node tools/marketer.mjs"
   }
 }
