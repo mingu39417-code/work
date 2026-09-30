@@ -28,6 +28,7 @@
 12. [용량이 큰 영상 다루기](#12-용량이-큰-영상-다루기)
 13. [확인 필요 체크리스트](#13-확인-필요-체크리스트)
 14. [문제 해결](#14-문제-해결)
+15. [크몽 마케터 (판매 페이지 점검·주간 진단·Claude 요청서)](#15-크몽-마케터)
 
 ---
 
@@ -38,7 +39,8 @@ work/
 ├─ content/                 ← 직접 고치는 곳
 │  ├─ site.mjs              사이트 전체 문구·연락처·서비스·FAQ·SEO 설정
 │  ├─ works.mjs             공개할 작업(포트폴리오) 목록 — 저장소(GitHub)에 올라감
-│  └─ works.private.mjs     아직 공개하지 않을 작업 목록 (직접 만듦 · git에 올라가지 않음 → 9장)
+│  ├─ works.private.mjs     아직 공개하지 않을 작업 목록 (직접 만듦 · git에 올라가지 않음 → 9장)
+│  └─ kmong.mjs             크몽 판매 페이지 원고 (제목·설명·패키지·메시지 템플릿 → 15장)
 ├─ raw/                     ← Resolve에서 내보낸 원본을 넣는 곳 (git에 올라가지 않음)
 │  ├─ reel/                 쇼릴 영상 1개 (+ 선택: poster.jpg)
 │  └─ works/<slug>/         작업별 원본 (main, poster, before-1, after-1, stills/ …)
@@ -49,6 +51,8 @@ work/
 │  └─ assets/               디자인(CSS)·스크립트·폰트·아이콘
 ├─ .preview/                미리보기 빌드 (비공개 작업 포함 — 절대 업로드 금지, git 제외)
 ├─ .demo/                   데모 프로젝트 (npm run demo, git 제외)
+├─ marketing/               크몽 주간 통계·원고·요청서 (npm run marketer 가 만듦, git 제외 → 15장)
+├─ .claude/skills/          Claude Code 전용 기능 (/kmong-marketer)
 ├─ src/templates/           페이지 HTML 틀 (디자인을 바꿀 때만)
 ├─ tools/                   빌드·미디어 변환·로컬 서버 도구
 ├─ tests/                   자동 테스트
@@ -147,6 +151,7 @@ npm run serve                               # → http://localhost:4173 에서 �
 | `npm run serve` | `site/` (배포본)를 http://localhost:4173 에서 보여줍니다. |
 | `npm run media` | `raw/` 원본을 웹용으로 변환해 `media/` 에 저장합니다. 바뀐 파일만 다시 처리합니다. |
 | `npm run demo` | 데모 프로젝트를 `.demo/` 에 만들고 빌드합니다. 확인: `node tools/serve.mjs --root .demo` |
+| `npm run marketer` | 크몽 판매 페이지 점수와 가장 급한 할 일, 최근 성과를 보여줍니다. 통계 기록·진단·원고·Claude 요청서는 [15장](#15-크몽-마케터). |
 | `npm test` | 자동 테스트(콘텐츠 검사·화면 템플릿·빌드·미디어 변환·서버)를 실행합니다. 브라우저 테스트는 아래 [브라우저 테스트](#브라우저-테스트-선택) 참고. |
 
 ### 옵션
@@ -167,6 +172,7 @@ npm run preview -- --lan                 # 미리보기를 같은 와이파이�
 | `tools/build.mjs` | `--root <폴더>` `--preview` `--check` `--quiet` |
 | `tools/media.mjs` | `[slug ...]` `--reel` `--force` `--dry-run` `--root <폴더>` |
 | `tools/serve.mjs` | `--root <폴더>` `--port <번호>` (기본 4173, 사용 중이면 다음 번호) `--host <주소>` (기본: 배포본 0.0.0.0, 미리보기 127.0.0.1) `--preview` `--lan` (미리보기를 같은 네트워크에도 열기) |
+| `tools/marketer.mjs` | `audit` `log` `note` `report` `export` `brief <작업>` · `--json` `--stdout` `--root <폴더>` (자세히는 `npm run marketer -- --help`) |
 | `tools/demo.mjs` | `--force` (데모 원본·미디어를 모두 다시 만들기) `--root <폴더>` (기본 `.demo`) |
 
 미디어 변환 속도·품질은 환경 변수로 조절할 수 있습니다: `TONECRAFT_X264_PRESET` (기본: 전체 영상 `slow`, 나머지 `medium` — 급할 때 `veryfast`. `ultrafast` 는 화질 프로필이 낮아지므로 쓰지 마세요), `TONECRAFT_MEDIA_JOBS` (동시에 처리할 파일 수).
@@ -828,3 +834,92 @@ PC와 휴대폰이 같은 와이파이인지, 서버가 표시한 `http://192.16
 
 **수정했는데 브라우저에 예전 화면이 보여요**
 `Ctrl + F5` (Mac: `Cmd + Shift + R`) 로 새로고침하세요.
+
+---
+
+## 15. 크몽 마케터
+
+크몽 서비스가 더 잘 팔리도록 **판매 페이지를 점검하고, 매주 숫자를 기록해 어디서 의뢰인을 놓치는지 찾아 주는** 도구입니다.
+두 부분으로 되어 있습니다.
+
+| | 하는 일 | 비용 |
+| --- | --- | --- |
+| `npm run marketer` | 크몽 규칙·전환 요소 점검, 주간 통계 기록과 병목 진단, 크몽에 붙여 넣을 원고, Claude 요청서 | 무료 · 인터넷 불필요 |
+| Claude Code의 `/kmong-marketer` | 위 결과를 읽고 제목·설명·패키지 개선안, 문의 답장, 홍보 글, 주간 계획을 **대신 써 주는 전담 마케터** | 쓰고 있는 Claude 요금제 안에서 |
+
+### 한 번만: 원고 채우기
+
+1. `content/kmong.mjs` 를 엽니다. 제목·키워드·설명·FAQ·메시지 템플릿은 `site.mjs` 의 내용을 바탕으로 초안을 넣어 두었습니다.
+2. **비워 둔 곳을 실제 값으로 채웁니다** — 패키지별 `price`(가격), `days`(작업일), `revisions`(수정 횟수). 사실과 다른 문구는 고치세요.
+3. 크몽 메인 이미지(652×488px, JPG/PNG)를 `marketing/` 폴더에 넣고 `mainImage: 'marketing/main-image.jpg'` 처럼 경로를 적으면 크기도 점검합니다.
+4. 점검합니다.
+
+```bash
+npm run marketer              # 점수 + 가장 급한 할 일 3가지
+npm run marketer -- audit     # 항목별 전체 점검
+npm run marketer -- export    # 크몽 편집기에 붙여 넣을 원고 → marketing/out/kmong-listing.txt
+```
+
+5. 크몽에 서비스를 등록(또는 수정)한 뒤 주소를 `content/kmong.mjs` 의 `url` **과** `content/site.mjs` 의 `contact.kmongUrl` 에 넣고 `npm run build` 하면 홈페이지에 크몽 버튼이 생깁니다.
+
+점검 항목: 제목 글자 수(띄어쓰기 제외 20자)·특수문자, 제목 속 핵심 키워드, 키워드 수, 메인 이미지 크기·비율·형식, 설명 구성,
+**판매 문구 속 외부 연락처**(이메일·전화·카카오톡·링크 — 크몽 금지 사항), 근거 없는 과장 표현, 패키지 3단 구성·가격 순서·작업일·수정 횟수, FAQ,
+**공개 동의를 받은 작업만 포트폴리오에 있는지**, 첫 문의 답장·리뷰 요청 템플릿.
+
+> 크몽 규칙(제목 20자, 이미지 652×488)은 2026년 9월 크몽 고객센터 가이드 기준입니다. 크몽이 바꾸면 `content/kmong.mjs` 맨 아래 `rules` 를 고치세요.
+
+### 매주: 숫자 기록 → 진단 (5분)
+
+크몽 판매자 통계에서 지난주 숫자를 보고 기록합니다. 날짜를 빼면 **지난주**로, `--week` 에 그 주의 아무 날짜를 주면 그 주(월요일 시작)로 저장됩니다.
+
+```bash
+npm run marketer -- log --impressions 1200 --clicks 30 --inquiries 3 --orders 1 --revenue 300000
+npm run marketer -- report
+```
+
+`report` 는 주별 추이(노출 → 클릭 → 문의 → 주문)와 **가장 막힌 단계 + 그 단계에서 할 일**을 보여줍니다.
+
+| 막힌 곳 | 뜻 | 주로 손볼 것 |
+| --- | --- | --- |
+| 노출 | 검색·목록에서 안 보임 | 제목 앞쪽 키워드, 카테고리, 응답 속도, 소액 광고 시험, 외부 홍보 |
+| 클릭률 | 보이는데 안 누름 | 메인 이미지(비포·애프터), 제목, 진입 가격 |
+| 문의율 | 들어와서 안 물어봄 | 상세 설명 맨 위 비포·애프터, 포트폴리오 3개 이상, 패키지 차이, FAQ |
+| 주문율 | 물어보고 안 삼 | 빠른 첫 답장, 룩 테스트, 견적 메시지 정리 |
+
+- 기준값(주 노출 300회, 클릭률 2%, 문의율 5%, 주문율 30%)은 **크몽 공식 수치가 아니라 출발점**입니다. 4주 이상 쌓이면 본인 평균과도 비교하고, `content/kmong.mjs` 의 `benchmarks` 에서 바꿀 수 있습니다.
+- 표본이 너무 작으면(클릭 20회·문의 5건 미만 등) 판단하지 않고 “판단하기엔 적음”으로 표시합니다.
+- **무언가를 바꾸면 기록하세요.** 다음 주 `report` 에서 그 주 옆에 표시되어 효과를 비교할 수 있습니다. 한 번에 한 가지만 바꾸는 것이 좋습니다.
+
+```bash
+npm run marketer -- note "메인 이미지를 비포·애프터로 교체"
+```
+
+통계·매출·원고·요청서는 모두 `marketing/` 폴더에 저장되며 **git에 올라가지 않습니다**(영업 정보). 컴퓨터를 바꿀 때는 이 폴더를 직접 복사하세요.
+
+### Claude에게 맡기기
+
+**Claude Code** 에서 이 폴더를 열고 `/kmong-marketer` 를 입력하거나 그냥 이렇게 말하면 됩니다.
+
+```text
+/kmong-marketer 판매 페이지 점검하고 가장 효과 큰 것부터 고쳐줘
+/kmong-marketer 주간 점검 — 노출 1200 클릭 30 문의 3 주문 1 매출 30만
+/kmong-marketer 이 문의에 답장 써줘: (의뢰인 메시지 붙여 넣기)
+/kmong-marketer 공개 작업으로 인스타·쇼츠 홍보 글 만들어줘
+```
+
+마케터는 `content/kmong.mjs` 를 고치기 전에 바꿀 내용을 먼저 보여주고, 사실(경력·건수·클라이언트·가격)을 지어내지 않으며,
+공개 동의를 받지 않은 작업은 홍보에 쓰지 않고, 크몽 메시지에 외부 연락처를 넣지 않습니다. (규칙: `.claude/skills/kmong-marketer/SKILL.md`)
+
+**claude.ai(웹·앱)** 를 쓴다면 요청서를 만들어 통째로 붙여 넣으세요. 브랜드·지금 원고·공개 작업·점검 결과·최근 통계가 한 파일에 담깁니다(비공개 작업은 들어가지 않습니다).
+
+```bash
+npm run marketer -- brief title        # 제목·키워드 후보
+npm run marketer -- brief description  # 상세 설명 다듬기
+npm run marketer -- brief packages     # 패키지·가격 전략
+npm run marketer -- brief reply --input 문의.txt   # 문의 답장 (문의 내용을 파일로)
+npm run marketer -- brief sns          # 인스타·쇼츠·블로그 홍보
+npm run marketer -- brief weekly       # 주간 계획
+npm run marketer -- brief competitor   # 경쟁 서비스 비교 (파일 맨 아래에 경쟁 서비스 내용 붙여 넣기)
+```
+
+→ `marketing/out/brief-<작업>.md` 가 만들어집니다.
