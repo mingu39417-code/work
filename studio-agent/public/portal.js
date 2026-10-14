@@ -8,7 +8,7 @@
   function designCard(d) {
     return `<div class="card stack">
       <iframe class="design-frame" sandbox="" loading="lazy" title="${esc(d.title)}" src="${base}/designs/${d.id}/raw"></iframe>
-      <div><strong>${esc(d.title)}</strong> <span class="badge">${d.round}차</span> ${d.approved ? '<span class="badge ok">최종 선택</span>' : ''}</div>
+      <div><strong>${esc(d.title)}</strong> <span class="badge">${d.round}차</span> <span class="badge" title="생성형 AI로 제작한 시안입니다">AI 생성</span> ${d.approved ? '<span class="badge ok">최종 선택</span>' : ''}</div>
       <p class="muted" style="margin:0">${esc(d.rationale)}</p>
       <div class="row" style="gap:6px">
         <a class="btn small" href="${base}/designs/${d.id}/raw" target="_blank" rel="noopener">크게 보기</a>
@@ -53,6 +53,8 @@
     $('#studio').textContent = state.studio.studioName;
     $('#title').textContent = state.project.title;
     $('#status').textContent = state.project.statusLabel;
+    $('#ai-notice').textContent = state.studio.aiNotice;
+    $('#sim-banner').classList.toggle('hidden', !state.simulation);
     const docs = [...state.quotes.filter((q) => q.status !== 'superseded').map(quoteCard), ...state.invoices.map(invoiceCard)];
     $('#docs').innerHTML = docs.join('');
     $('#designs-wrap').classList.toggle('hidden', !state.designs.length);

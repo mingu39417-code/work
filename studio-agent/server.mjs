@@ -15,8 +15,32 @@ import { startScheduler } from './lib/scheduler.mjs';
 import {
   STATUSES, ACTIVE_STATUSES, AUTONOMY_LABELS, createInquiry, postMessage, enqueue, enqueueAgent,
   executeAction, acceptQuoteByClient, approveDesignByClient, markInvoicePaid, canDownload,
-  studioName, portalUrl, short,
+  studioName, portalUrl, short, aiNotice, OUTREACH_BASIS, outreachBlocked,
 } from './lib/actions.mjs';
+import { mailAccount, mailer, GMAIL, accountAuth } from './lib/mailer.mjs';
+import { startInboxPoller } from './lib/inbox.mjs';
+import { ImapFlow } from 'imapflow';
+
+// 개인정보 처리 안내 (문의 양식 · 메일에서 연결) — 설정의 프로필 · 보유 기간으로 만듭니다.
+// 법률 자문이 아니므로 실제 운영 전 전문가 검토를 권합니다.
+function privacyPage(s) {
+  const e = (t) => String(t ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const name = studioName(s);
+  return `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>개인정보 처리 안내 — ${e(name)}</title><link rel="stylesheet" href="/assets/app.css"></head><body><main class="wrap stack">
+<h1>개인정보 처리 안내</h1>
+<p>${e(name)}${s.profile.ownerName ? ` (${e(s.profile.ownerName)})` : ''}는 디자인 문의 응대와 작업 진행을 위해 아래와 같이 개인정보를 처리합니다.</p>
+<div class="card stack">
+<h2>1. 수집 항목과 목적</h2><p>이름, 이메일, 회사 · 브랜드명, 연락처(선택), 문의 내용, 첨부 이미지, 대화 기록 — 문의 응대, 견적, 디자인 작업, 납품, 정산, 분쟁 대응</p>
+<h2>2. 보유 기간</h2><p>${e(s.policy.retention)}</p>
+<h2>3. 처리 위탁 및 국외 이전</h2>
+<p>· Anthropic, PBC (미국) — 문의 응대와 디자인 시안 제작을 위한 생성형 AI(Claude) 처리. 이전 항목: 문의 · 대화 내용, 첨부 이미지, 이름 · 회사명. 이전 시점 · 방법: 응대 · 작업 시 암호화된 네트워크로 전송.<br>
+· Google LLC (미국) — 이메일(Gmail) 송수신. 이전 항목: 이메일 주소, 메일 내용.</p>
+<h2>4. 마케팅 정보 수신 (선택)</h2><p>동의한 분께만 작업 소식 · 제안 메일을 보내며, 모든 메일 하단의 수신거부 링크나 '수신거부' 회신으로 언제든 철회할 수 있습니다.</p>
+<h2>5. 생성형 AI 사용 고지</h2><p>${e(aiNotice(s))}</p>
+<h2>6. 정보주체의 권리</h2><p>열람 · 정정 · 삭제 · 처리정지를 요청할 수 있습니다. 문의: ${e(s.profile.ownerEmail || '(연락처 미설정)')}</p>
+${s.policy.businessInfo ? `<h2>7. 사업자 정보</h2><p>${e(s.policy.businessInfo)}</p>` : ''}
+</div></main></body></html>`;
+}
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(here, 'public');
@@ -130,6 +154,8 @@ function publicSettings(s) {
     specialties: s.profile.specialties,
     services: s.services.map(({ id, name, description, basePrice, days }) => ({ id, name, description, basePrice, days })),
     currency: s.policy.currency,
+    aiNotice: aiNotice(s),
+    retention: s.policy.retention,
   };
 }
 
@@ -144,6 +170,7 @@ function portalView(store, project) {
       .find('messages', (m) => m.projectId === project.id && !m.internal)
       .map((m) => ({ id: m.id, from: m.from === 'client' ? 'client' : m.from === 'system' ? 'system' : 'studio', text: m.text, at: m.createdAt, designIds: m.designIds, quoteId: m.quoteId, invoiceId: m.invoiceId, attachments: m.attachments })),
     designs: store.find('designs', (d) => d.projectId === project.id && d.shared).map((d) => ({ id: d.id, title: d.title, rationale: d.rationale, format: d.format, round: d.round, approved: d.approved })),
+    simulation: Boolean(project.simulation),
     quotes: store.find('quotes', (q) => q.projectId === project.id && q.status !== 'superseded').map(({ id, items, total, timelineDays, revisions, terms, status }) => ({ id, items, total, timelineDays, revisions, terms, status })),
     invoices: store.find('invoices', (i) => i.projectId === project.id && i.status !== 'cancelled').map(({ id, kind, amount, description, dueDate, status, clientNotified }) => ({ id, kind, amount, description, dueDate, status, clientNotified: Boolean(clientNotified) })),
   };
@@ -153,18 +180,19 @@ function maskedSettings(s) {
   const { auth, ...rest } = structuredClone(s);
   rest.apiKey = s.apiKey ? `${s.apiKey.slice(0, 10)}…${s.apiKey.slice(-4)}` : '';
   rest.hasApiKey = Boolean(s.apiKey);
-  rest.smtp.pass = s.smtp.pass ? '••••••••' : '';
   return rest;
 }
 
 function overview(ctx) {
   const { store, llm } = ctx;
   const s = store.settings;
-  const projects = store.all('projects');
+  // 연습 프로젝트는 매출 · 진행 현황에서 뺍니다.
+  const real = new Set(store.find('projects', (p) => !p.simulation).map((p) => p.id));
+  const projects = store.all('projects').filter((p) => real.has(p.id));
   const month = new Date().toISOString().slice(0, 7);
-  const paid = store.find('invoices', (i) => i.status === 'paid' && (i.paidAt ?? '').startsWith(month));
-  const outstanding = store.find('invoices', (i) => i.status === 'sent');
-  const pipeline = store.find('quotes', (q) => q.status === 'sent');
+  const paid = store.find('invoices', (i) => real.has(i.projectId) && i.status === 'paid' && (i.paidAt ?? '').startsWith(month));
+  const outstanding = store.find('invoices', (i) => real.has(i.projectId) && i.status === 'sent');
+  const pipeline = store.find('quotes', (q) => real.has(q.projectId) && q.status === 'sent');
   const usageMonth = store.find('usage', (u) => u.day.startsWith(month));
   const byStatus = Object.fromEntries(Object.keys(STATUSES).map((k) => [k, projects.filter((p) => p.status === k).length]));
   return {
@@ -181,6 +209,9 @@ function overview(ctx) {
       activeProjects: projects.filter((p) => ACTIVE_STATUSES.includes(p.status) && p.status !== 'inquiry').length,
       newInquiries: byStatus.inquiry,
       pendingApprovals: store.find('approvals', (a) => a.status === 'pending').length,
+      practiceSessions: store.find('projects', (p) => p.simulation).length,
+      lessons: store.find('lessons', (l) => l.active !== false).length,
+      mailAccount: Boolean(mailAccount(store)),
       openAlerts: store.find('alerts', (a) => !a.dismissed).length,
       revenueMonth: paid.reduce((t, i) => t + i.amount, 0),
       outstanding: outstanding.reduce((t, i) => t + i.amount, 0),
@@ -230,6 +261,7 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
   const ctx = { store, llm, running: null };
   const sessions = new Map();
   const scheduler = startWorker ? startScheduler(ctx, { intervalMs: schedulerInterval }) : null;
+  const inbox = startWorker ? startInboxPoller(ctx) : null;
   const sseClients = new Set();
 
   const broadcast = (type, data) => {
@@ -271,17 +303,31 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
 
     // ── 공개 API ──
     if (m === 'GET' && p === '/api/public/studio') return send(res, 200, publicSettings(store.settings));
+    if (m === 'GET' && p === '/privacy') return send(res, 200, privacyPage(store.settings), { 'Content-Type': 'text/html; charset=utf-8' });
+    if (m === 'GET' && (g = /^\/u\/([\w-]+)$/.exec(p))) return serveFile(res, path.join(PUBLIC, 'unsubscribe.html'));
+    if (m === 'POST' && p === '/api/public/unsubscribe') {
+      rateLimit(req, 'unsub', 20);
+      const b = await readJson(req);
+      const lead = store.findOne('leads', (l) => l.unsubToken && l.unsubToken === String(b.token ?? ''));
+      if (!lead) throw new HttpError(404, '링크가 올바르지 않습니다');
+      for (const l of store.find('leads', (x) => x.email === lead.email)) store.update('leads', l.id, { optOut: true, status: 'lost' });
+      for (const c of store.find('clients', (x) => x.email === lead.email)) store.update('clients', c.id, { marketingOptOut: true });
+      store.log('outreach', `수신거부: ${lead.company || lead.name || lead.email}`, { leadId: lead.id });
+      return send(res, 200, { ok: true });
+    }
     if (m === 'POST' && p === '/api/public/inquiry') {
       rateLimit(req, 'inquiry', 5);
       const b = await readJson(req);
       if (b.website) return send(res, 200, { ok: true }); // 스팸 봇용 숨은 칸
       if (!String(b.email ?? '').includes('@')) throw new HttpError(400, '이메일을 확인해 주세요');
       if (String(b.description ?? '').trim().length < 5) throw new HttpError(400, '요청 내용을 조금 더 적어 주세요');
+      if (b.privacyConsent !== true) throw new HttpError(400, '개인정보 수집 · 이용 안내에 동의해 주세요');
       const project = await createInquiry(ctx, {
         name: String(b.name ?? '').slice(0, 80), email: String(b.email).slice(0, 120), company: String(b.company ?? '').slice(0, 120),
         phone: String(b.phone ?? '').slice(0, 40), serviceId: b.serviceId, budget: String(b.budget ?? '').slice(0, 80),
         deadline: String(b.deadline ?? '').slice(0, 80), description: String(b.description).slice(0, 5000),
         attachments: saveImages(store, b.images), source: 'website',
+        privacyConsent: true, marketingConsent: b.marketingConsent === true,
       });
       return send(res, 200, { ok: true, portalUrl: `/p/${project.portalToken}` });
     }
@@ -346,7 +392,7 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       const email = String(b.email ?? '').trim().toLowerCase();
       const text = String(b.text ?? '').trim().slice(0, 10000);
       if (!text) throw new HttpError(400, 'text가 필요합니다');
-      const client = email && store.findOne('clients', (c) => c.email === email);
+      const client = email && store.findOne('clients', (c) => c.email === email && !c.simulation);
       const open = client && store.find('projects', (x) => x.clientId === client.id && ACTIVE_STATUSES.includes(x.status)).at(-1);
       if (open) {
         await postMessage(ctx, open, { from: 'client', text });
@@ -398,7 +444,7 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       req.on('close', () => sseClients.delete(res));
       return;
     }
-    if (m === 'GET' && p === '/api/meta') return send(res, 200, { statuses: STATUSES, autonomy: AUTONOMY_LABELS, models: Object.fromEntries(Object.entries(MODELS).map(([k, v]) => [k, v.label])) });
+    if (m === 'GET' && p === '/api/meta') return send(res, 200, { statuses: STATUSES, autonomy: AUTONOMY_LABELS, models: Object.fromEntries(Object.entries(MODELS).map(([k, v]) => [k, v.label])), outreachBasis: OUTREACH_BASIS });
     if (m === 'GET' && p === '/api/overview') return send(res, 200, overview(ctx));
 
     if (m === 'POST' && p === '/api/agent/pause') { store.updateSettings({ paused: true }); store.log('agent', '대표가 에이전트를 일시정지했습니다'); return send(res, 200, { ok: true }); }
@@ -412,7 +458,6 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       delete b.hasApiKey;
       if (typeof b.apiKey === 'string' && (b.apiKey.includes('…') || b.apiKey === '')) delete b.apiKey;
       if (b.apiKey) b.apiKey = b.apiKey.trim();
-      if (b.smtp && b.smtp.pass === '••••••••') delete b.smtp.pass;
       if (b.model && !MODELS[b.model]) throw new HttpError(400, '지원하지 않는 모델');
       if (Array.isArray(b.services)) {
         b.services = b.services.map((x, i) => ({
@@ -447,7 +492,8 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
 
     // 프로젝트
     if (m === 'GET' && p === '/api/projects') {
-      return send(res, 200, store.all('projects').map((x) => projectSummary(store, x)).sort((a, b) => (b.lastMessageAt ?? b.createdAt).localeCompare(a.lastMessageAt ?? a.createdAt)));
+      const sim = url.searchParams.get('sim') === '1';
+      return send(res, 200, store.find('projects', (x) => Boolean(x.simulation) === sim).map((x) => projectSummary(store, x)).sort((a, b) => (b.lastMessageAt ?? b.createdAt).localeCompare(a.lastMessageAt ?? a.createdAt)));
     }
     if (m === 'POST' && p === '/api/projects') {
       const b = await readJson(req);
@@ -536,13 +582,17 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
     }
 
     // 영업 리드
-    if (m === 'GET' && p === '/api/leads') return send(res, 200, store.all('leads').slice().reverse());
+    if (m === 'GET' && p === '/api/leads') {
+      return send(res, 200, store.all('leads').slice().reverse().map((l) => ({ ...l, blocked: outreachBlocked(store, l) })));
+    }
     if (m === 'POST' && p === '/api/leads') {
       const b = await readJson(req);
       if (!b.company && !b.name) throw new HttpError(400, '회사명이나 이름을 입력하세요');
       const lead = store.insert('leads', {
         name: String(b.name ?? ''), company: String(b.company ?? ''), email: String(b.email ?? '').trim().toLowerCase(),
         website: String(b.website ?? ''), notes: String(b.notes ?? ''), status: 'new', agentNotes: [],
+        basis: OUTREACH_BASIS[b.basis] ? b.basis : '', basisNote: String(b.basisNote ?? '').slice(0, 500),
+        optOut: false, unsubToken: crypto.randomBytes(16).toString('base64url'),
       });
       store.log('sales', `리드 추가: ${lead.company || lead.name}`, { leadId: lead.id });
       if (b.autoOutreach) enqueue(store, 'sales', { leadId: lead.id }, { dedupe: `sales:${lead.id}` });
@@ -554,7 +604,10 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       if (m === 'PATCH' && !g[2]) {
         const b = await readJson(req);
         const patch = {};
-        for (const k of ['name', 'company', 'email', 'website', 'notes', 'status']) if (typeof b[k] === 'string') patch[k] = b[k];
+        for (const k of ['name', 'company', 'website', 'notes', 'status', 'basisNote']) if (typeof b[k] === 'string') patch[k] = b[k];
+        if (typeof b.email === 'string') patch.email = b.email.trim().toLowerCase();
+        if (typeof b.basis === 'string') patch.basis = OUTREACH_BASIS[b.basis] ? b.basis : '';
+        // 수신거부는 대시보드에서도 되돌릴 수 없습니다(법적으로 다시 동의를 받아야 함).
         store.update('leads', lead.id, patch);
         return send(res, 200, { ok: true });
       }
@@ -564,6 +617,91 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
         return send(res, 200, { ok: true });
       }
       if (m === 'POST' && !g[2]) throw new HttpError(405, '');
+    }
+
+    // 계정 보관함 — 비밀번호는 암호화 저장, 화면에는 절대 다시 보여 주지 않습니다.
+    const publicAccount = ({ secret, ...a }) => ({ ...a, hasSecret: Boolean(secret) });
+    if (m === 'GET' && p === '/api/accounts') return send(res, 200, store.all('accounts').map(publicAccount));
+    if (m === 'POST' && p === '/api/accounts') {
+      const b = await readJson(req);
+      if (b.kind !== 'gmail') throw new HttpError(400, '지금은 Gmail 계정만 등록할 수 있습니다');
+      const address = String(b.address ?? '').trim().toLowerCase();
+      if (!/^[^@\s]+@(gmail\.com|googlemail\.com|[^@\s]+\.[^@\s]+)$/.test(address)) throw new HttpError(400, '이메일 주소를 확인하세요');
+      const pw = String(b.password ?? '').replace(/\s+/g, '');
+      if (pw.length < 8) throw new HttpError(400, 'Gmail 앱 비밀번호(16자리)를 입력하세요');
+      if (store.findOne('accounts', (a) => a.address === address)) throw new HttpError(409, '이미 등록된 계정입니다');
+      const acct = store.insert('accounts', { kind: 'gmail', role: 'delivery', label: String(b.label ?? '납품 · 응대용 Gmail'), address, secret: store.vault.encrypt(pw), enabled: true, inbox: b.inbox !== false, status: 'unverified', lastError: '' });
+      store.log('settings', `계정 등록: ${address}`);
+      return send(res, 200, publicAccount(acct));
+    }
+    if ((g = /^\/api\/accounts\/(\w+)(\/test)?$/.exec(p))) {
+      const acct = store.get('accounts', g[1]);
+      if (!acct) throw new HttpError(404, '계정 없음');
+      if (m === 'DELETE' && !g[2]) { store.remove('accounts', acct.id); store.log('settings', `계정 삭제: ${acct.address}`); return send(res, 200, { ok: true }); }
+      if (m === 'PATCH' && !g[2]) {
+        const b = await readJson(req);
+        const patch = {};
+        for (const k of ['enabled', 'inbox']) if (typeof b[k] === 'boolean') patch[k] = b[k];
+        if (typeof b.label === 'string') patch.label = b.label;
+        if (b.password) { patch.secret = store.vault.encrypt(String(b.password).replace(/\s+/g, '')); patch.status = 'unverified'; }
+        store.update('accounts', acct.id, patch);
+        return send(res, 200, publicAccount(store.get('accounts', acct.id)));
+      }
+      if (m === 'POST' && g[2]) {
+        const errors = [];
+        try { await mailer.verify(store, acct); } catch (err) { errors.push(`보내기(SMTP): ${err.message}`); }
+        if (acct.inbox !== false) {
+          const c = new ImapFlow({ ...GMAIL.imap, auth: accountAuth(store, acct), logger: false });
+          try { await c.connect(); await c.logout(); } catch (err) { errors.push(`받기(IMAP): ${err.message}`); }
+        }
+        store.update('accounts', acct.id, { status: errors.length ? 'error' : 'ok', lastError: errors.join(' / '), lastCheckAt: new Date().toISOString() });
+        return send(res, 200, { ok: !errors.length, error: errors.join(' / ') });
+      }
+    }
+
+    // 연습(시뮬레이션) — 대표가 고객 역할을 하고, 에이전트는 실제와 똑같이 응대 · 디자인합니다.
+    if (m === 'POST' && p === '/api/sim') {
+      const b = await readJson(req);
+      if (String(b.description ?? '').trim().length < 3) throw new HttpError(400, '첫 요청 내용을 입력하세요');
+      const project = await createInquiry(ctx, {
+        name: String(b.name ?? '연습 고객').slice(0, 80), company: String(b.company ?? '').slice(0, 120), serviceId: b.serviceId,
+        title: b.title ? `[연습] ${String(b.title).slice(0, 100)}` : '', description: String(b.description).slice(0, 5000),
+        budget: String(b.budget ?? ''), deadline: String(b.deadline ?? ''), source: 'practice', simulation: true,
+      });
+      if (!b.title) store.update('projects', project.id, { title: `[연습] ${project.title}` });
+      return send(res, 200, { id: project.id, portalToken: project.portalToken });
+    }
+    if (m === 'POST' && (g = /^\/api\/projects\/(\w+)\/coach$/.exec(p))) {
+      const project = store.get('projects', g[1]);
+      if (!project) throw new HttpError(404, '프로젝트 없음');
+      const b = await readJson(req);
+      const text = String(b.text ?? '').trim();
+      if (!text) throw new HttpError(400, '피드백을 입력하세요');
+      const scope = ['account', 'design', 'sales', 'all'].includes(b.scope) ? b.scope : 'all';
+      const lesson = store.insert('lessons', { text: text.slice(0, 1000), scope, target: String(b.target ?? '').slice(0, 200), projectId: project.id, active: true });
+      await postMessage(ctx, project, { from: 'owner', internal: true, text: `[코칭 · ${scope}] ${text}` });
+      if (project.simulation && b.redo !== false) enqueueAgent(store, project.id, { kind: 'coaching', text, target: lesson.target });
+      store.log('owner', `코칭 피드백 저장: ${short(text)}`, { projectId: project.id });
+      return send(res, 200, lesson);
+    }
+    if (m === 'GET' && p === '/api/lessons') return send(res, 200, store.all('lessons').slice().reverse());
+    if (m === 'POST' && p === '/api/lessons') {
+      const b = await readJson(req);
+      if (!String(b.text ?? '').trim()) throw new HttpError(400, '내용을 입력하세요');
+      return send(res, 200, store.insert('lessons', { text: String(b.text).slice(0, 1000), scope: ['account', 'design', 'sales'].includes(b.scope) ? b.scope : 'all', active: true }));
+    }
+    if ((g = /^\/api\/lessons\/(\w+)$/.exec(p))) {
+      if (!store.get('lessons', g[1])) throw new HttpError(404, '없음');
+      if (m === 'DELETE') { store.remove('lessons', g[1]); return send(res, 200, { ok: true }); }
+      if (m === 'PATCH') {
+        const b = await readJson(req);
+        const patch = {};
+        if (typeof b.active === 'boolean') patch.active = b.active;
+        if (typeof b.text === 'string' && b.text.trim()) patch.text = b.text.slice(0, 1000);
+        if (['account', 'design', 'sales', 'all'].includes(b.scope)) patch.scope = b.scope;
+        store.update('lessons', g[1], patch);
+        return send(res, 200, { ok: true });
+      }
     }
 
     // 기록 · 알림 · 작업
@@ -608,6 +746,7 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
     ctx,
     close() {
       scheduler?.stop();
+      inbox?.stop();
       clearInterval(ping);
       for (const r of sseClients) r.end();
       return new Promise((resolve) => server.close(resolve));

@@ -30,6 +30,13 @@
     <div class="field"><label for="description">요청 내용 *</label><textarea id="description" name="description" rows="6" required placeholder="어떤 디자인이 필요한지, 어디에 쓰는지, 참고하고 싶은 느낌 등을 자유롭게 적어 주세요."></textarea></div>
     <div class="field"><label for="images">참고 이미지 (선택, 최대 4장 · 장당 5MB)</label><input id="images" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple></div>
     <input name="website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px">
+    <div class="card stack" style="background:var(--surface-2);box-shadow:none">
+      <small>개인정보 수집 · 이용 안내 — 항목: 이름, 이메일, 회사, 문의 내용, 첨부 이미지 / 목적: 문의 응대 · 견적 · 작업 · 납품 · 정산 / 보유 기간: <span id="retention"></span>.
+      문의 내용은 응대와 디자인 작업을 위해 생성형 AI(Anthropic Claude, 미국)로 처리되며, 메일은 Gmail(Google, 미국)로 주고받습니다. 동의하지 않으시면 문의를 접수할 수 없습니다. <a href="/privacy" target="_blank">자세히 보기</a></small>
+      <label class="switch"><input type="checkbox" id="privacyConsent" required> (필수) 개인정보 수집 · 이용 및 국외 이전에 동의합니다</label>
+      <label class="switch"><input type="checkbox" id="marketingConsent"> (선택) 작업 소식 · 제안 메일 수신에 동의합니다</label>
+      <small id="ai-notice"></small>
+    </div>
     <p class="error-text" id="err" role="alert"></p>
     <button class="btn primary" type="submit" id="submit">문의 보내기</button>
   </form>

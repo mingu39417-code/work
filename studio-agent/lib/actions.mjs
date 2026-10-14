@@ -74,7 +74,32 @@ export function enqueueAgent(store, projectId, event, { delayMs = 0 } = {}) {
 }
 
 // ── 메시지 ────────────────────────────────────────────────────
-export async function postMessage(ctx, project, { from, text, internal = false, designIds, quoteId, invoiceId, attachments }) {
+// 인공지능기본법(투명성 의무)에 따라 고객에게 생성형 AI 사용을 알립니다.
+export function aiNotice(settings) {
+  const who = settings.profile.ownerName || studioName(settings);
+  return `※ ${studioName(settings)}는 고객 응대와 디자인 시안 제작에 생성형 AI(Anthropic Claude)를 사용하며, ${who}가 운영 · 검수합니다.`;
+}
+
+export function emailSubject(settings, project, suffix) {
+  return `[${studioName(settings)}] ${project.title || '프로젝트'} — ${suffix} [${project.ref}]`;
+}
+
+// 이 프로젝트에서 주고받은 마지막 메일 — 답장이 같은 메일 스레드로 이어지게 합니다.
+function threadHeaders(store, project) {
+  const ids = store.find('messages', (m) => m.projectId === project.id && m.emailId).map((m) => m.emailId);
+  return ids.length ? { inReplyTo: ids.at(-1), references: ids.slice(-10) } : {};
+}
+
+export async function emailClient(ctx, project, { subject, text, attachments }) {
+  const { store } = ctx;
+  if (project.simulation) return { sent: false, reason: '연습 프로젝트' };
+  const client = store.get('clients', project.clientId);
+  const s = store.settings;
+  const body = `${text}\n\n— ${studioName(s)}\n\n대화 · 시안 · 견적 확인: ${portalUrl(s, project)}\n이 메일에 바로 답장하셔도 됩니다.\n\n${aiNotice(s)}`;
+  return mailer.send(store, { to: client?.email, subject, text: body, attachments, ...threadHeaders(store, project) });
+}
+
+export async function postMessage(ctx, project, { from, text, internal = false, designIds, quoteId, invoiceId, attachments, emailId }) {
   const { store } = ctx;
   const msg = store.insert('messages', {
     projectId: project.id,
@@ -85,20 +110,15 @@ export async function postMessage(ctx, project, { from, text, internal = false, 
     quoteId: quoteId ?? null,
     invoiceId: invoiceId ?? null,
     attachments: attachments ?? [],
+    emailId: emailId ?? null,
   });
   store.update('projects', project.id, { lastMessageAt: msg.createdAt });
 
-  // 고객에게 보이는 스튜디오 쪽 메시지는 이메일로도 알립니다(SMTP 설정 시).
+  // 고객에게 보이는 스튜디오 쪽 메시지는 이메일로도 보냅니다(Gmail 등록 시, 연습 프로젝트 제외).
   if (!internal && (from === 'agent' || from === 'owner')) {
-    const client = store.get('clients', project.clientId);
-    const s = store.settings;
     try {
-      const r = await mailer.send(s, {
-        to: client?.email,
-        subject: `[${studioName(s)}] ${project.title || '프로젝트'} — 새 메시지`,
-        text: `${text}\n\n— ${studioName(s)}\n\n대화 · 시안 · 견적 확인: ${portalUrl(s, project)}`,
-      });
-      if (r.sent) store.update('messages', msg.id, { emailed: true });
+      const r = await emailClient(ctx, project, { subject: emailSubject(store.settings, project, '새 메시지'), text });
+      if (r.sent) store.update('messages', msg.id, { emailed: true, emailId: r.messageId ?? null });
     } catch (err) {
       store.log('error', `이메일 발송 실패: ${err.message}`, { projectId: project.id });
     }
@@ -110,17 +130,23 @@ export async function postMessage(ctx, project, { from, text, internal = false, 
 export async function createInquiry(ctx, input) {
   const { store } = ctx;
   const email = String(input.email ?? '').trim().toLowerCase();
-  let client = email ? store.findOne('clients', (c) => c.email === email) : null;
+  const sim = Boolean(input.simulation);
+  // 연습 고객은 실제 고객과 섞이지 않게 따로 만듭니다.
+  let client = email && !sim ? store.findOne('clients', (c) => c.email === email && !c.simulation) : null;
   if (!client) {
     client = store.insert('clients', {
       name: String(input.name ?? '').trim() || '이름 미상',
-      email,
+      email: sim ? '' : email,
       company: String(input.company ?? '').trim(),
       phone: String(input.phone ?? '').trim(),
       notes: [],
       source: input.source ?? 'website',
+      simulation: sim,
     });
   }
+  const now = new Date().toISOString();
+  if (input.privacyConsent) store.update('clients', client.id, { privacyConsentAt: now });
+  if (input.marketingConsent) store.update('clients', client.id, { marketingConsent: { at: now, source: input.source ?? 'website' }, marketingOptOut: false });
   const service = store.settings.services.find((s) => s.id === input.serviceId);
   const project = store.insert('projects', {
     clientId: client.id,
@@ -134,7 +160,9 @@ export async function createInquiry(ctx, input) {
     designRounds: 0,
     extraRounds: 0,
     portalToken: crypto.randomBytes(16).toString('base64url'),
+    ref: `P-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
     source: input.source ?? 'website',
+    simulation: sim,
   });
   const lines = [
     input.description && String(input.description).trim(),
@@ -178,6 +206,8 @@ export function depositPaid(store, project) {
 }
 
 export function workAllowed(store, project) {
+  // 연습 프로젝트는 디자인 연습에 집중하도록 견적 · 계약금 없이도 작업할 수 있습니다.
+  if (project.simulation) return null;
   if (!acceptedQuote(store, project)) return '고객이 아직 견적을 수락하지 않았습니다.';
   if (store.settings.policy.requireDeposit && !depositPaid(store, project)) {
     return '계약금 입금이 확인되지 않았습니다. 계약금 청구서를 보내고 대표가 입금을 확인하면 작업을 시작할 수 있습니다.';
@@ -215,8 +245,8 @@ export function validateInvoice(store, project, input) {
 }
 
 export function canDownload(store, project) {
-  if (!['delivered', 'completed'].includes(project.status)) return false;
-  return !store.find('invoices', (i) => i.projectId === project.id && i.status === 'sent').length;
+  // 정산 완료(견적 전액 청구 + 모두 입금)된 프로젝트만 원본을 받을 수 있습니다.
+  return project.status === 'completed';
 }
 
 // ── 승인이 필요할 수 있는 동작 실행 ─────────────────────────────
@@ -285,24 +315,81 @@ export async function executeAction(ctx, action) {
     case 'outreach': {
       const lead = store.get('leads', action.leadId);
       if (!lead) return '실패: 리드를 찾을 수 없습니다.';
+      const blocked = outreachBlocked(store, lead);
+      if (blocked) return `실패: ${blocked}`;
+      const today = new Date().toISOString().slice(0, 10);
+      const sentToday = store.find('leads', (l) => l.lastOutreach?.emailed && l.lastOutreach.at.startsWith(today)).length;
+      if (sentToday >= (Number(s.policy.outreachDailyLimit) || 20)) return '실패: 오늘 영업 메일 한도를 다 썼습니다. 내일 다시 승인해 주세요.';
+      const ad = adMessage(s, lead, action);
       let sent = false;
       try {
-        const r = await mailer.send(s, { to: lead.email, subject: action.subject, text: action.body });
+        const r = await mailer.send(store, { to: lead.email, subject: ad.subject, text: ad.body, headers: { 'List-Unsubscribe': `<${ad.unsubscribeUrl}>` } });
         sent = r.sent;
       } catch (err) {
         store.log('error', `영업 메일 발송 실패: ${err.message}`, { leadId: lead.id });
       }
       store.update('leads', lead.id, {
         status: 'contacted',
-        lastOutreach: { subject: action.subject, body: action.body, at: new Date().toISOString(), emailed: sent },
+        lastOutreach: { subject: ad.subject, body: ad.body, at: new Date().toISOString(), emailed: sent },
       });
       store.log('outreach', `${sent ? '영업 메일 발송' : '영업 메시지 준비(직접 보내기)'}: ${lead.company || lead.name}`, { leadId: lead.id });
-      return sent ? '이메일로 보냈습니다.' : 'SMTP가 없어 직접 보낼 수 있도록 대시보드에 저장했습니다.';
+      return sent ? '이메일로 보냈습니다.' : 'Gmail이 등록되지 않아 직접 보낼 수 있도록 대시보드에 저장했습니다.';
     }
 
     default:
       return `알 수 없는 동작: ${action.type}`;
   }
+}
+
+// ── 영업 메일의 법적 요건 (정보통신망법 제50조) ───────────────────────
+// 광고성 이메일은 ① 수신자의 사전 동의가 있거나 ② 최근 6개월 안에 거래한 고객에게
+// 같은 종류의 서비스를 알리는 경우에만 보낼 수 있습니다. 보낼 때는 제목에 (광고),
+// 본문에 보낸 사람 이름 · 연락처와 수신거부 방법을 넣어야 하고, 거부하면 다시 보내면 안 됩니다.
+export const OUTREACH_BASIS = {
+  consent: '수신 동의를 받음',
+  customer: '최근 6개월 안에 거래한 고객',
+};
+
+export function isOptedOut(store, email) {
+  const e = String(email ?? '').toLowerCase();
+  if (!e) return false;
+  return store.all('leads').some((l) => l.email === e && l.optOut) || store.all('clients').some((c) => c.email === e && c.marketingOptOut);
+}
+
+export function outreachBlocked(store, lead) {
+  if (!lead.email) return '이메일 주소가 없습니다.';
+  if (isOptedOut(store, lead.email)) return '수신거부한 주소입니다. 다시 보낼 수 없습니다.';
+  if (lead.basis === 'consent') {
+    const client = store.findOne('clients', (c) => c.email === lead.email && c.marketingConsent && !c.marketingOptOut);
+    if (!client && String(lead.basisNote ?? '').trim().length < 5) return '수신 동의를 받은 근거(언제 · 어떻게)를 리드 메모의 "동의 근거"에 적어야 보낼 수 있습니다.';
+    return null;
+  }
+  if (lead.basis === 'customer') {
+    const since = Date.now() - 183 * 864e5;
+    const client = store.findOne('clients', (c) => c.email === lead.email && !c.simulation);
+    const recent = client && store.find('projects', (p) => p.clientId === client.id && ['completed', 'delivered'].includes(p.status) && Date.parse(p.updatedAt) >= since).length;
+    if (!recent) return '최근 6개월 안에 거래(납품 완료)한 기록이 이 주소에 없습니다. 수신 동의를 받은 경우에만 보낼 수 있습니다.';
+    return null;
+  }
+  return '광고성 메일을 보낼 법적 근거(수신 동의 또는 최근 6개월 거래)가 없습니다. 동의 없는 영업 메일은 정보통신망법 위반이라 보내지 않습니다.';
+}
+
+export function adMessage(settings, lead, { subject, body }) {
+  const p = settings.profile;
+  const unsubscribeUrl = `${settings.publicUrl.replace(/\/$/, '')}/u/${lead.unsubToken}`;
+  const contact = [p.ownerEmail, settings.policy.businessInfo].filter(Boolean).join(' · ');
+  const subj = String(subject).replace(/^\s*\(광고\)\s*/, '');
+  return {
+    subject: `(광고) ${subj}`,
+    unsubscribeUrl,
+    body: `${body}
+
+—
+보낸 사람: ${studioName(settings)}${p.ownerName ? ` (${p.ownerName})` : ''}${contact ? `\n연락처: ${contact}` : ''}
+이 메일은 ${OUTREACH_BASIS[lead.basis] ?? '수신 동의'}에 따라 보내 드렸습니다.
+수신거부: ${unsubscribeUrl}  (또는 이 메일에 '수신거부'라고 답장해 주세요)
+${aiNotice(settings)}`,
+  };
 }
 
 // 자율 설정에 따라 바로 실행하거나 승인 대기열에 넣습니다.
@@ -356,11 +443,39 @@ export async function markInvoicePaid(ctx, invoiceId) {
   if (inv.kind === 'extra_revision') store.update('projects', project.id, { extraRounds: (project.extraRounds ?? 0) + 1 });
   if (inv.kind === 'deposit' && project.status === 'accepted') store.update('projects', project.id, { status: 'in_progress' });
   const unpaid = store.find('invoices', (i) => i.projectId === project.id && i.status === 'sent').length;
-  if (project.status === 'delivered' && !unpaid) store.update('projects', project.id, { status: 'completed' });
   await postMessage(ctx, project, { from: 'system', text: `입금 확인: ${money(s, inv.amount)} (${inv.description || inv.kind})` });
   store.log('payment', `입금 확인 ${money(s, inv.amount)} — ${project.title}`, { projectId: project.id });
+  if (project.status === 'delivered' && !unpaid) await completeProject(ctx, project);
   enqueueAgent(store, project.id, { kind: 'payment_received', invoiceId: inv.id });
   return inv;
+}
+
+// 납품 완료 + 미수금 0 → 정산 완료로 바꾸고, 확정 시안 원본을 납품 메일로 보냅니다.
+export async function completeProject(ctx, project) {
+  const { store } = ctx;
+  // 견적 금액을 모두 청구했고, 보낸 청구서가 모두 입금된 경우에만 원본을 넘깁니다.
+  if (!acceptedQuote(store, project) || invoiceRemaining(store, project) > 0) return false;
+  if (store.find('invoices', (i) => i.projectId === project.id && i.status === 'sent').length) return false;
+  store.update('projects', project.id, { status: 'completed' });
+  const designs = store.find('designs', (d) => d.projectId === project.id && d.shared);
+  const finals = designs.filter((d) => d.approved);
+  const files = (finals.length ? finals : designs.filter((d) => d.round === Math.max(...designs.map((x) => x.round)))).map((d) => ({
+    filename: `${d.title.replace(/[^\p{L}\p{N}_-]+/gu, '_').slice(0, 60) || 'design'}.${d.format}`,
+    content: d.code,
+    contentType: d.format === 'svg' ? 'image/svg+xml' : 'text/html',
+  }));
+  await postMessage(ctx, project, { from: 'system', text: '정산이 끝나 원본 파일을 받을 수 있습니다.' });
+  try {
+    const r = await emailClient(ctx, project, {
+      subject: emailSubject(store.settings, project, '최종 파일 납품'),
+      text: `작업이 모두 마무리되었습니다. 감사합니다!\n최종 파일 ${files.length}개를 첨부했습니다. 프로젝트 페이지에서도 언제든 받으실 수 있습니다.\n(첨부 파일은 생성형 AI를 활용해 제작되었습니다.)`,
+      attachments: files,
+    });
+    store.log('delivery', `${r.sent ? '납품 메일 발송' : '정산 완료 (메일 미발송)'} — 파일 ${files.length}개 — ${project.title}`, { projectId: project.id });
+  } catch (err) {
+    store.log('error', `납품 메일 발송 실패: ${err.message}`, { projectId: project.id });
+  }
+  return true;
 }
 
 export function short(text, n = 80) {

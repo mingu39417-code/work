@@ -1,37 +1,58 @@
-// 이메일 발송 (선택) — 설정 → 이메일(SMTP)을 채우면 켜집니다.
-// 비워 두면 메일은 보내지 않고, 고객은 포털 링크에서 대화를 확인합니다.
+// 이메일 발송 — 대시보드 → 계정에 등록한 Gmail(앱 비밀번호)로 보냅니다.
+// 등록하지 않으면 메일은 보내지 않고, 고객은 포털 링크에서 대화를 확인합니다.
 
 import nodemailer from 'nodemailer';
 
-export function smtpReady(settings) {
-  const s = settings.smtp ?? {};
-  return Boolean(s.host && s.from);
+export const GMAIL = { smtp: { host: 'smtp.gmail.com', port: 465, secure: true }, imap: { host: 'imap.gmail.com', port: 993, secure: true } };
+
+// 발송 · 수신에 쓰는 Gmail 계정 (켜져 있는 첫 번째)
+export function mailAccount(store) {
+  return store.findOne('accounts', (a) => a.kind === 'gmail' && a.enabled !== false) ?? null;
+}
+
+export function accountAuth(store, acct) {
+  return { user: acct.address, pass: store.vault.decrypt(acct.secret).replace(/\s+/g, '') };
 }
 
 let cached = { sig: '', transport: null };
 
-function transport(settings) {
-  const s = settings.smtp;
-  const sig = JSON.stringify(s);
-  if (cached.sig !== sig) {
-    cached = {
-      sig,
-      transport: nodemailer.createTransport({
-        host: s.host,
-        port: Number(s.port) || 587,
-        secure: Boolean(s.secure),
-        auth: s.user ? { user: s.user, pass: s.pass } : undefined,
-      }),
-    };
-  }
+function transport(store, acct) {
+  const auth = accountAuth(store, acct);
+  const sig = `${acct.id}:${acct.updatedAt}`;
+  if (cached.sig !== sig) cached = { sig, transport: nodemailer.createTransport({ ...GMAIL.smtp, auth }) };
   return cached.transport;
 }
 
-// sender는 테스트에서 바꿔 끼웁니다.
+function fromName(store) {
+  const p = store.settings.profile;
+  return (p.studioName || p.ownerName || '디자인 스튜디오').replace(/["<>]/g, '');
+}
+
+// 테스트에서 mailer.deliver 를 바꿔 끼웁니다.
 export const mailer = {
-  async send(settings, { to, subject, text }) {
-    if (!smtpReady(settings) || !to) return { sent: false, reason: 'SMTP 미설정 또는 받는 사람 없음' };
-    await transport(settings).sendMail({ from: settings.smtp.from, to, subject, text });
-    return { sent: true };
+  async deliver(store, acct, message) {
+    const info = await transport(store, acct).sendMail(message);
+    return info.messageId;
+  },
+
+  // { to, subject, text, inReplyTo, references, attachments, headers }
+  async send(store, msg) {
+    const acct = mailAccount(store);
+    if (!acct || !msg.to) return { sent: false, reason: '발송용 Gmail이 등록되지 않았거나 받는 사람이 없음' };
+    const messageId = await this.deliver(store, acct, {
+      from: `"${fromName(store)}" <${acct.address}>`,
+      to: msg.to,
+      subject: msg.subject,
+      text: msg.text,
+      inReplyTo: msg.inReplyTo,
+      references: msg.references,
+      attachments: msg.attachments,
+      headers: msg.headers,
+    });
+    return { sent: true, messageId };
+  },
+
+  async verify(store, acct) {
+    await nodemailer.createTransport({ ...GMAIL.smtp, auth: accountAuth(store, acct) }).verify();
   },
 };

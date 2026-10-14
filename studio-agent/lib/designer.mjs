@@ -120,7 +120,7 @@ export async function runDesignJob(ctx, job) {
   if (!project) return;
   const round = (project.designRounds ?? 0) + 1;
   const meta = { projectId: project.id };
-  const system = [{ type: 'text', text: designerSystem(s), cache_control: { type: 'ephemeral' } }];
+  const system = [{ type: 'text', text: designerSystem(s, store.all('lessons')), cache_control: { type: 'ephemeral' } }];
   const brief = briefText(store, project, job);
   const images = imageBlocks(store, project);
   const base = baseDesignsText(store, job.baseDesignIds ?? []);

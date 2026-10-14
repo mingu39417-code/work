@@ -4,6 +4,8 @@
     document.title = `${s.studioName} — 디자인 문의`;
     $('#studio').textContent = `${s.studioName} — 디자인 문의`;
     $('#bio').textContent = s.bio || s.specialties || '';
+    $('#retention').textContent = s.retention;
+    $('#ai-notice').textContent = s.aiNotice;
     for (const svc of s.services) {
       const o = document.createElement('option');
       o.value = svc.id;
@@ -21,6 +23,12 @@
       $('#err').textContent = '이름 · 이메일 · 요청 내용을 확인해 주세요.';
       return;
     }
+    if (!$('#privacyConsent').checked) {
+      $('#err').textContent = '개인정보 수집 · 이용 안내에 동의해 주세요.';
+      return;
+    }
+    body.privacyConsent = true;
+    body.marketingConsent = $('#marketingConsent').checked;
     $('#submit').disabled = true;
     try {
       body.images = await readImages($('#images'));

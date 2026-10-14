@@ -5,6 +5,7 @@
 import {
   STATUSES, money, gated, enqueue, postMessage, validateQuote, validateInvoice,
   workAllowed, roundLimit, acceptedQuote, invoiceRemaining, short, studioName,
+  completeProject, outreachBlocked, OUTREACH_BASIS,
 } from './actions.mjs';
 import { accountManagerSystem, salesSystem } from './prompts.mjs';
 import { textOf } from './claude.mjs';
@@ -172,6 +173,7 @@ async function runAccountTool(ctx, project, name, input) {
       }
       store.update('projects', project.id, patch);
       store.log('project', `프로젝트 정보 갱신 (${Object.keys(patch).join(', ')}) — ${p().title}`, { projectId: project.id });
+      if (patch.status === 'delivered' && (await completeProject(ctx, p()))) return '저장했습니다. 미수금이 없어 정산 완료 처리하고 원본 파일을 납품했습니다.';
       return '저장했습니다.';
     }
 
@@ -194,7 +196,7 @@ async function runAccountTool(ctx, project, name, input) {
       const why = workAllowed(store, cur);
       if (why) return `시작할 수 없습니다: ${why}`;
       const limit = roundLimit(store, cur);
-      if ((cur.designRounds ?? 0) >= limit) {
+      if (!cur.simulation && (cur.designRounds ?? 0) >= limit) {
         return `포함된 수정 횟수를 모두 썼습니다(${cur.designRounds}/${limit}회). 추가 수정은 ${money(s, s.policy.extraRevisionPrice)}의 extra_revision 청구서를 보내고, 입금이 확인되면 진행하세요.`;
       }
       const running = store.findOne('jobs', (j) => j.kind === 'design' && j.payload.projectId === cur.id && ['queued', 'running'].includes(j.status));
@@ -252,6 +254,7 @@ function describeEvent(store, e) {
     case 'client_paid_notice': return `The client says they paid invoice ${e.invoiceId}. Thank them and say the studio will confirm shortly (the owner confirms payments). Do not mark anything paid yourself.`;
     case 'followup': return `Scheduled follow-up: ${e.purpose}. Check whether it is still needed (the client may have replied) and act accordingly.`;
     case 'owner_instruction': return `The owner gave you an instruction: "${e.text}". Carry it out.`;
+    case 'coaching': return `The owner (your trainer) gave coaching feedback on this practice session${e.target ? ` about ${e.target}` : ''}: "${e.text}". It is now saved as a permanent rule for all future work. Apply it right away: redo what it refers to (rewrite your last message to the client, or start a new design round that applies it). Do not mention the coaching to the client.`;
     case 'approval_rejected': return `The owner rejected your pending action (${e.summary}). Owner feedback: "${e.feedback || '(none)'}". Redo it accordingly.`;
     default: return JSON.stringify(e);
   }
@@ -286,7 +289,7 @@ export function buildProjectContext(store, project, events) {
 # Event(s) to handle
 ${events.map((e) => `- ${describeEvent(store, e)}`).join('\n')}
 
-# Project ${project.id}
+# Project ${project.id}${project.simulation ? ' — SIMULATION (practice run; the owner plays the client)' : ''}
 - Title: ${project.title}
 - Status: ${project.status} (${STATUSES[project.status]})
 - Service: ${service ? `${service.name} [${service.id}]` : '(not set)'}
@@ -366,14 +369,14 @@ export async function runAccountManager(ctx, { projectId, events }) {
   const { store } = ctx;
   const project = store.get('projects', projectId);
   if (!project) return;
-  const ownerDriven = events.some((e) => ['owner_instruction', 'approval_rejected'].includes(e.kind));
+  const ownerDriven = events.some((e) => ['owner_instruction', 'approval_rejected', 'coaching'].includes(e.kind));
   if (!project.autopilot && !ownerDriven) {
     store.log('agent', `자동 응대 꺼짐 — 대표가 직접 처리: ${project.title}`, { projectId });
     return;
   }
   store.log('agent', `에이전트 작업 시작 (${events.map((e) => e.kind).join(', ')}) — ${project.title}`, { projectId });
   const note = await loop(ctx, {
-    system: accountManagerSystem(store.settings),
+    system: accountManagerSystem(store.settings, store.all('lessons')),
     tools: ACCOUNT_TOOLS,
     context: buildProjectContext(store, project, events),
     purpose: 'account_manager',
@@ -389,7 +392,15 @@ export async function runSales(ctx, { leadId, instruction }) {
   const lead = store.get('leads', leadId);
   if (!lead) return;
   const s = store.settings;
+  // 법적으로 보낼 수 없는 대상이면 Claude를 부르지 않습니다(비용 0).
+  const blocked = outreachBlocked(store, lead);
+  if (blocked) {
+    store.update('leads', leadId, { status: 'needs_info', agentNotes: [...(lead.agentNotes ?? []), { at: new Date().toISOString(), text: `발송 불가: ${blocked}` }] });
+    store.log('sales', `영업 메일 보류 — ${lead.company || lead.name}: ${blocked}`, { leadId });
+    return;
+  }
   const context = `Prospect ${lead.id}
+- Legal basis for contacting: ${OUTREACH_BASIS[lead.basis]}${lead.basisNote ? ` (${lead.basisNote})` : ''}
 - Name: ${lead.name || '(unknown)'}
 - Company: ${lead.company || '(unknown)'}
 - Email: ${lead.email || '(none — the owner will send manually)'}
@@ -401,7 +412,7 @@ export async function runSales(ctx, { leadId, instruction }) {
 ${instruction ? `\nOwner's instruction: ${instruction}` : ''}`;
   store.log('sales', `영업 메시지 작성 시작 — ${lead.company || lead.name}`, { leadId });
   const note = await loop(ctx, {
-    system: salesSystem(s),
+    system: salesSystem(s, store.all('lessons')),
     tools: SALES_TOOLS,
     context,
     purpose: 'sales',

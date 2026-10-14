@@ -82,7 +82,8 @@
     clearTimeout(refreshTimer);
     refreshTimer = setTimeout(async () => {
       await refreshOverview();
-      if (['overview', 'approvals', 'projects', 'project', 'sales', 'activity'].includes(currentView) && !busyTyping()) route(true);
+      if (currentView === 'practiceDetail') return refreshPracticeSide();
+      if (['overview', 'approvals', 'projects', 'project', 'sales', 'activity', 'practice', 'accounts'].includes(currentView) && !busyTyping()) route(true);
     }, 700);
   }
 
@@ -90,12 +91,12 @@
   async function route(soft = false) {
     const hash = location.hash.replace(/^#/, '') || '/';
     const [, a, b] = hash.split('/');
-    const view = a === 'projects' && b ? 'project' : a || 'overview';
+    const view = a === 'projects' && b ? 'project' : a === 'practice' && b ? 'practiceDetail' : a || 'overview';
     currentView = view;
-    $$('.side a').forEach((x) => x.classList.toggle('on', x.dataset.nav === (view === 'project' ? 'projects' : view)));
+    $$('.side a').forEach((x) => x.classList.toggle('on', x.dataset.nav === ({ project: 'projects', practiceDetail: 'practice' }[view] ?? view)));
     const y = window.scrollY;
     try {
-      const fn = { overview, approvals, projects, project: () => projectView(b), sales, activity, settings }[view];
+      const fn = { overview, approvals, projects, project: () => projectView(b), sales, activity, settings, accounts, practice, practiceDetail: () => practiceDetail(b) }[view];
       if (fn) await fn();
       else $('#view').innerHTML = '<div class="empty">없는 화면입니다</div>';
     } catch (err) {
@@ -118,6 +119,7 @@
     const maxDay = Math.max(0.01, ...usage.map((u) => u.cost));
     const setup = [];
     if (!OV.agent.hasApiKey) setup.push('<a href="#/settings">Claude API 키 입력</a>');
+    if (!OV.kpi.mailAccount) setup.push('<a href="#/accounts">납품 · 응대용 Gmail 등록</a> (없으면 고객은 포털 링크로만 소통)');
     const settingsData = !OV.agent.hasApiKey ? null : await api('/api/settings');
     if (settingsData && !settingsData.profile.ownerName) setup.push('<a href="#/settings">프로필(이름 · 소개 · 포트폴리오) 작성</a>');
 
@@ -315,12 +317,15 @@
     const leads = await api('/api/leads');
     $('#view').innerHTML = `
       <div class="page-head"><h1>영업</h1></div>
-      <p class="muted">연락해 보고 싶은 가게 · 브랜드 · 회사를 넣으면 에이전트가 그곳에 맞춘 첫 제안 메시지를 씁니다. 스팸이 되지 않도록 한 곳에 한 번, 구체적인 아이디어와 거절 방법을 담아 보냅니다.
-      기본값은 '승인 후 발송'입니다(설정 → 자율 수준).</p>
+      <div class="card alert" style="margin-bottom:12px"><strong>법적으로 보낼 수 있는 사람에게만 보냅니다</strong> (정보통신망법 제50조)<br>
+      <small>광고성 메일은 ① 수신에 동의한 사람(문의 양식의 '제안 메일 수신 동의' 포함) 또는 ② 최근 6개월 안에 거래(납품)한 고객에게만 보낼 수 있습니다.
+      처음 보는 가게 · 회사에 동의 없이 보내는 메일, SNS DM은 불법이라 이 시스템은 보내지 않습니다. 보낼 때는 제목 (광고) 표시, 보낸 사람 · 연락처, 수신거부 링크, AI 사용 고지가 자동으로 붙고, 수신거부한 주소는 영구히 막힙니다.</small></div>
       <form class="card stack" id="lead-form">
         <div class="row"><div><label>회사 · 브랜드</label><input name="company"></div><div><label>담당자</label><input name="name"></div><div><label>이메일</label><input name="email" type="email"></div></div>
         <div><label>웹사이트 · 인스타그램</label><input name="website" placeholder="https://"></div>
-        <div><label>메모 (무엇을 하는 곳인지, 왜 디자인이 필요해 보이는지 — 구체적일수록 좋은 메시지가 나옵니다)</label><textarea name="notes"></textarea></div>
+        <div class="row"><div><label>연락 근거 (필수)</label><select name="basis"><option value="">선택하세요</option>${Object.entries(META.outreachBasis).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
+          <div style="flex:2 1 280px"><label>동의 근거 (언제 · 어떻게 동의받았는지)</label><input name="basisNote" placeholder="예: 2026-10-01 행사 부스에서 명함 교환 시 서면 동의"></div></div>
+        <div><label>메모 (무엇을 하는 곳인지, 어떤 제안이 도움이 될지 — 구체적일수록 좋은 메시지가 나옵니다)</label><textarea name="notes"></textarea></div>
         <div class="row" style="align-items:center"><label class="switch"><input type="checkbox" name="autoOutreach" checked> 추가하자마자 제안 메시지 작성</label><div style="flex:0 0 auto"><button class="btn primary">리드 추가</button></div></div>
       </form>
       <div class="stack" style="margin-top:16px">${leads.map((l) => `
@@ -330,8 +335,10 @@
           <small>${esc(l.email || '이메일 없음')} ${l.website ? `· <a href="${esc(l.website)}" target="_blank" rel="noopener">${esc(l.website)}</a>` : ''}</small>
           ${l.notes ? `<p class="pre" style="margin-top:6px">${esc(l.notes)}</p>` : ''}
           ${l.lastOutreach ? `<details style="margin-top:6px"><summary>${l.lastOutreach.emailed ? '보낸 메시지' : '보낼 메시지 (직접 복사해서 보내세요)'} · ${when(l.lastOutreach.at)}</summary><p><strong>${esc(l.lastOutreach.subject)}</strong></p><p class="pre">${esc(l.lastOutreach.body)}</p><button class="btn small" data-copy>복사</button></details>` : ''}
+          <div><small>근거: ${esc(META.outreachBasis[l.basis] ?? '없음')}${l.basisNote ? ` — ${esc(l.basisNote)}` : ''}</small> ${l.optOut ? '<span class="badge bad">수신거부</span>' : l.blocked ? `<span class="badge warn" title="${esc(l.blocked)}">발송 불가</span>` : '<span class="badge ok">발송 가능</span>'}</div>
+          ${l.blocked && !l.optOut ? `<small class="error-text">${esc(l.blocked)}</small>` : ''}
           ${(l.agentNotes ?? []).length ? `<small>에이전트 메모: ${esc(l.agentNotes.at(-1).text)}</small>` : ''}
-          <div class="row" style="margin-top:8px;align-items:center"><input data-instr placeholder="(선택) 지시: 예) 리뉴얼 오픈 축하로 시작해 줘"><div style="flex:0 0 auto"><button class="btn small" data-outreach>제안 메시지 ${l.lastOutreach ? '다시 ' : ''}작성</button></div></div>
+          <div class="row" style="margin-top:8px;align-items:center"><input data-instr placeholder="(선택) 지시: 예) 리뉴얼 오픈 축하로 시작해 줘"><div style="flex:0 0 auto"><button class="btn small" data-outreach ${l.blocked ? 'disabled' : ''}>제안 메시지 ${l.lastOutreach ? '다시 ' : ''}작성</button></div></div>
         </div>`).join('') || '<div class="card empty">리드가 없습니다</div>'}</div>`;
     $('#lead-form').onsubmit = async (e) => {
       e.preventDefault();
@@ -405,7 +412,6 @@
         <div class="card"><h2>정책</h2>
           <div class="row">${f('통화', 'policy.currency', s.policy.currency)}${f('계약금 %', 'policy.depositPercent', s.policy.depositPercent, 'type="number"')}${f('급행 추가 %', 'policy.rushFeePercent', s.policy.rushFeePercent, 'type="number"')}${f('추가 수정 1회 가격', 'policy.extraRevisionPrice', s.policy.extraRevisionPrice, 'type="number"')}${f('1차 시안 개수', 'policy.conceptsPerRound', s.policy.conceptsPerRound, 'type="number" min="1" max="3"')}</div>
           <label class="switch"><input type="checkbox" name="policy.requireDeposit" ${s.policy.requireDeposit ? 'checked' : ''}> 계약금 입금 확인 후에만 디자인 작업 시작</label>
-          <div class="row" style="margin-top:12px">${sel('AI 사용 알림', 'policy.aiDisclosure', s.policy.aiDisclosure, { on_ask: '고객이 물으면 솔직하게 답함 (기본)', always: '첫 메시지에서 먼저 밝힘' })}</div>
           ${ta('입금 안내 (청구서에 자동 첨부)', 'policy.paymentInfo', s.policy.paymentInfo, '예: 국민은행 000-00-0000 홍길동 / 세금계산서 발행 가능')}
           ${ta('에이전트에게 주는 추가 지침', 'policy.extraInstructions', s.policy.extraInstructions, '예: 주말 문의는 월요일 오전에 답한다고 안내 / 경쟁사 비방 금지 / 수정은 영업일 2일 안에')}
         </div>
@@ -416,10 +422,11 @@
             <div class="seg" data-auto="${k}"><button type="button" data-v="auto" class="${s.autonomy[k] === 'auto' ? 'on' : ''}">자동</button><button type="button" data-v="approve" class="${s.autonomy[k] !== 'auto' ? 'on' : ''}">승인 후</button></div></div>`).join('')}
         </div>
 
-        <div class="card"><h2>이메일 (선택)</h2>
-          <p class="muted">채우면 고객에게 새 메시지 알림과 포털 링크, 영업 메일이 이메일로 나갑니다. Gmail은 '앱 비밀번호'를 쓰세요 (smtp.gmail.com / 465 / SSL).</p>
-          <div class="row">${f('SMTP 서버', 'smtp.host', s.smtp.host, 'placeholder="smtp.gmail.com"')}${f('포트', 'smtp.port', s.smtp.port, 'type="number"')}<div class="field"><label>&nbsp;</label><label class="switch"><input type="checkbox" name="smtp.secure" ${s.smtp.secure ? 'checked' : ''}> SSL (465)</label></div></div>
-          <div class="row">${f('아이디', 'smtp.user', s.smtp.user, 'autocomplete="off"')}${f('비밀번호', 'smtp.pass', s.smtp.pass, 'type="password" autocomplete="new-password"')}${f('보내는 사람', 'smtp.from', s.smtp.from, 'placeholder="스튜디오 이름 <me@example.com>"')}</div>
+        <div class="card"><h2>법적 고지 정보</h2>
+          <p class="muted">광고 메일 하단 · 개인정보 처리 안내(<a href="/privacy" target="_blank">/privacy</a>)에 자동으로 들어갑니다. 고객 응대 · 메일에는 생성형 AI 사용 고지가 항상 붙습니다(끌 수 없음).</p>
+          ${f('사업자 정보 (상호 · 대표자 · 사업자등록번호 · 주소, 있으면)', 'policy.businessInfo', s.policy.businessInfo, 'placeholder="예: TONECRAFT · 임민규 · 123-45-67890 · 서울시 …"')}
+          ${f('개인정보 보유 기간', 'policy.retention', s.policy.retention)}
+          ${f('하루 영업 메일 최대 발송 수', 'policy.outreachDailyLimit', s.policy.outreachDailyLimit, 'type="number" min="1" max="100"')}
         </div>
 
         <div class="card"><h2>연결</h2>
@@ -468,6 +475,184 @@
       e.preventDefault();
       try { await api('/api/settings/password', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); toast('비밀번호를 바꿨습니다'); e.target.reset(); } catch (err) { toast(err.message); }
     };
+  }
+
+  // ── 계정 ──
+  async function accounts() {
+    const list = await api('/api/accounts');
+    const STATUS = { ok: ['ok', '정상'], error: ['bad', '오류'], unverified: ['warn', '확인 전'] };
+    $('#view').innerHTML = `
+      <div class="page-head"><h1>계정</h1></div>
+      <div class="card stack" style="margin-bottom:16px">
+        <h2>납품 · 응대용 Gmail</h2>
+        <p class="muted">등록하면 고객 답장 · 견적 · 청구 · 납품 파일이 이 주소로 나가고, 받은편지함을 2분마다 확인해 답장과 새 문의를 자동으로 처리합니다.
+        <strong>Google 계정 비밀번호가 아니라 '앱 비밀번호'</strong>를 넣으세요: Google 계정 → 보안 → 2단계 인증 켜기 → <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">앱 비밀번호</a>에서 16자리 생성.
+        비밀번호는 암호화해서 이 컴퓨터에만 저장하고, 화면에 다시 보여 주지 않습니다. 채팅이나 메신저로 다른 사람(AI 포함)에게 보내지 마세요.</p>
+        <form class="row" id="acct-form" style="align-items:flex-end">
+          <div><label>Gmail 주소</label><input name="address" type="email" placeholder="studio.example@gmail.com" required autocomplete="off"></div>
+          <div><label>앱 비밀번호 (16자리)</label><input name="password" type="password" autocomplete="new-password" required></div>
+          <div style="flex:0 0 auto"><button class="btn primary">등록</button></div>
+        </form>
+      </div>
+      <div class="stack">${list.map((a) => `
+        <div class="card" data-acct="${a.id}">
+          <div class="item-row"><h3>${esc(a.address)} <small>· ${esc(a.label)}</small></h3><span class="badge ${STATUS[a.status]?.[0] ?? ''}">${STATUS[a.status]?.[1] ?? esc(a.status)}</span></div>
+          ${a.lastError ? `<p class="error-text">${esc(a.lastError)}</p>` : ''}
+          <small>마지막 확인 ${a.lastCheckAt ? when(a.lastCheckAt) : '없음'}</small>
+          <div style="display:flex;flex-wrap:wrap;margin-top:8px;align-items:center;gap:8px">
+            <label class="switch"><input type="checkbox" data-k="enabled" ${a.enabled !== false ? 'checked' : ''}> 사용</label>
+            <label class="switch"><input type="checkbox" data-k="inbox" ${a.inbox !== false ? 'checked' : ''}> 받은편지함 자동 처리</label>
+            <input data-pw type="password" placeholder="새 앱 비밀번호 (바꿀 때만)" autocomplete="new-password" style="max-width:240px">
+            <button class="btn small" data-act="pw">비밀번호 변경</button>
+            <button class="btn small primary" data-act="test">연결 확인</button>
+            <button class="btn small danger" data-act="del">삭제</button>
+          </div>
+        </div>`).join('') || '<div class="card empty">등록된 계정이 없습니다</div>'}</div>
+      <div class="card" style="margin-top:16px"><h2>SNS 계정</h2>
+        <p class="muted">아이디 · 비밀번호로 SNS에 로그인해 자동으로 DM · 팔로우 · 댓글을 하는 방식은 각 플랫폼 이용약관 위반(계정 정지)이고, 동의 없는 광고 DM은 정보통신망법 위반이라 지원하지 않습니다.
+        인스타그램은 Meta 공식 API로 ① 포트폴리오 자동 게시 ② 먼저 연락해 온 DM · 댓글 자동 응대를 연결할 수 있습니다(준비 중 — 필요한 계정은 README 참고).</p></div>`;
+    $('#acct-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const body = { kind: 'gmail', ...Object.fromEntries(new FormData(e.target)) };
+      try {
+        const a = await api('/api/accounts', { method: 'POST', body });
+        toast('등록했습니다. 연결을 확인합니다…');
+        const r = await api(`/api/accounts/${a.id}/test`, { method: 'POST', body: {} });
+        toast(r.ok ? '연결 성공 — 이제 메일을 자동으로 주고받습니다' : `연결 실패: ${r.error}`);
+      } catch (err) { toast(err.message); }
+      route();
+    };
+    $$('[data-acct]').forEach((card) => {
+      const id = card.dataset.acct;
+      card.querySelectorAll('input[data-k]').forEach((i) => (i.onchange = () => api(`/api/accounts/${id}`, { method: 'PATCH', body: { [i.dataset.k]: i.checked } })));
+      card.querySelector('[data-act="test"]').onclick = async (e) => {
+        e.target.disabled = true;
+        const r = await api(`/api/accounts/${id}/test`, { method: 'POST', body: {} });
+        toast(r.ok ? '연결 성공' : `연결 실패: ${r.error}`);
+        route();
+      };
+      card.querySelector('[data-act="pw"]').onclick = async () => {
+        const pw = card.querySelector('[data-pw]').value;
+        if (!pw) return toast('새 앱 비밀번호를 입력하세요');
+        await api(`/api/accounts/${id}`, { method: 'PATCH', body: { password: pw } });
+        toast('바꿨습니다. 연결 확인을 눌러 주세요');
+        route();
+      };
+      card.querySelector('[data-act="del"]').onclick = async () => {
+        if (!confirm('이 계정을 삭제할까요? 메일 자동 처리가 멈춥니다.')) return;
+        await api(`/api/accounts/${id}`, { method: 'DELETE' });
+        route();
+      };
+    });
+  }
+
+  // ── 연습 · 학습 ──
+  const SCOPE = { account: '응대 · 견적', design: '디자인', sales: '영업 메일', all: '전체' };
+
+  function lessonRow(l) {
+    return `<div class="item" data-lesson="${l.id}"><div class="item-row" style="align-items:flex-start">
+      <span class="pre" style="${l.active === false ? 'opacity:.5;text-decoration:line-through' : ''}">${esc(l.text)}</span>
+      <span style="display:inline-flex;flex:0 0 auto;gap:4px;align-items:center"><span class="badge">${SCOPE[l.scope] ?? l.scope}</span>
+      <button class="btn small" data-l="toggle">${l.active === false ? '켜기' : '끄기'}</button><button class="btn small danger" data-l="del">삭제</button></span></div>
+      ${l.target ? `<small>대상: ${esc(l.target)}</small>` : ''}</div>`;
+  }
+
+  function bindLessons(root) {
+    const again = () => (currentView === 'practiceDetail' ? refreshPracticeSide() : route(true));
+    $$('[data-lesson]', root).forEach((row) => {
+      const id = row.dataset.lesson;
+      row.querySelector('[data-l="toggle"]').onclick = async (e) => { await api(`/api/lessons/${id}`, { method: 'PATCH', body: { active: e.target.textContent === '켜기' } }); again(); };
+      row.querySelector('[data-l="del"]').onclick = async () => { if (confirm('이 학습 노트를 삭제할까요?')) { await api(`/api/lessons/${id}`, { method: 'DELETE' }); again(); } };
+    });
+  }
+
+  async function practice() {
+    const [sims, lessons, st] = await Promise.all([api('/api/projects?sim=1'), api('/api/lessons'), api('/api/public/studio')]);
+    $('#view').innerHTML = `
+      <div class="page-head"><h1>연습 · 학습</h1></div>
+      <p class="muted">실제 고객을 받기 전에, 내가 고객 역할을 하며 에이전트와 대화해 보세요. 견적 · 디자인 시안까지 실제와 똑같이 만들지만 메일 · 청구는 나가지 않습니다(API 비용은 실제로 듭니다).
+      마음에 안 드는 점은 '코칭 피드백'에 적으면 <strong>학습 노트</strong>로 저장되어 연습과 실제 업무 모두에 계속 적용됩니다.</p>
+      <div class="grid2">
+        <form class="card stack" id="sim-form"><h2>새 연습 시작</h2>
+          <div class="row"><div><label>고객 이름 (역할)</label><input name="name" placeholder="예: 김사장"></div><div><label>회사 · 브랜드</label><input name="company" placeholder="예: 모모카페"></div></div>
+          <div class="row"><div><label>서비스</label><select name="serviceId"><option value="">선택 안 함</option>${st.services.map((x) => `<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select></div><div><label>예산 (선택)</label><input name="budget"></div></div>
+          <div><label>첫 요청 (고객이 처음 보내는 메시지)</label><textarea name="description" required placeholder="예: 동네 카페 로고가 필요해요. 따뜻하고 미니멀한 느낌으로, 간판이랑 컵에 쓸 거예요."></textarea></div>
+          <div><button class="btn primary">연습 시작</button></div>
+        </form>
+        <div class="card"><h2>연습 기록</h2><div class="list">${sims.map((p) => `
+          <a class="item" href="#/practice/${p.id}"><div class="item-row"><span class="item-title">${esc(p.title)}</span>${statusBadge(p.status)}</div><small>${p.lastMessage ? `${esc(FROM[p.lastMessage.from])}: ${esc(p.lastMessage.text)} · ${when(p.lastMessage.at)}` : ''}</small></a>`).join('') || '<div class="empty">아직 연습이 없습니다</div>'}</div></div>
+      </div>
+      <div class="card" style="margin-top:16px" id="lessons-card"><div class="item-row"><h2>학습 노트 (${lessons.filter((l) => l.active !== false).length}개 적용 중)</h2></div>
+        <p class="muted">에이전트의 지시문에 그대로 들어가는 규칙입니다. 끄면 적용되지 않고, 삭제하면 사라집니다.</p>
+        <form class="row" id="lesson-add" style="align-items:flex-end;margin-bottom:8px"><div style="flex:3 1 300px"><label>직접 추가</label><input name="text" placeholder="예: 로고 시안은 항상 흑백 버전도 같이 보여 줄 것"></div><div style="flex:0 0 140px"><label>적용 범위</label><select name="scope">${Object.entries(SCOPE).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div><div style="flex:0 0 auto"><button class="btn">추가</button></div></form>
+        <div class="list">${lessons.map(lessonRow).join('') || '<div class="empty">아직 없습니다</div>'}</div></div>`;
+    $('#sim-form').onsubmit = async (e) => {
+      e.preventDefault();
+      try { const r = await api('/api/sim', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); location.hash = `#/practice/${r.id}`; } catch (err) { toast(err.message); }
+    };
+    $('#lesson-add').onsubmit = async (e) => {
+      e.preventDefault();
+      try { await api('/api/lessons', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); route(); } catch (err) { toast(err.message); }
+    };
+    bindLessons($('#lessons-card'));
+  }
+
+  let practiceId = null;
+  async function practiceDetail(id) {
+    practiceId = id;
+    const d = await api(`/api/projects/${id}`);
+    $('#view').innerHTML = `
+      <div class="page-head"><div><a href="#/practice" class="muted">← 연습 · 학습</a><h1>${esc(d.project.title)}</h1></div>
+        <div class="row" style="flex:0 0 auto;gap:8px"><a class="btn small" href="#/projects/${id}">업무 화면으로 보기 (입금 확인 등)</a><a class="btn small" href="${esc(d.portalUrl)}" target="_blank" rel="noopener">고객 화면 새 창</a></div></div>
+      <div class="grid-detail">
+        <div class="card" style="padding:0;overflow:hidden">
+          <div style="padding:10px 14px;border-bottom:1px solid var(--line)"><strong>고객 역할</strong> <small class="muted">— 실제 고객이 보는 화면 그대로입니다. 여기서 채팅 · 견적 수락 · 시안 확정을 해 보세요.</small></div>
+          <iframe src="/p/${esc(d.project.portalToken)}" title="고객 화면" style="width:100%;height:78vh;border:0;background:var(--bg)"></iframe>
+        </div>
+        <div class="stack">
+          <form class="card stack" id="coach">
+            <h2>코칭 피드백</h2>
+            <p class="muted" style="margin:0">고객으로서가 아니라 <strong>대표로서</strong> 에이전트에게 주는 피드백입니다. 학습 노트로 저장되고, 에이전트가 바로 반영해서 다시 합니다.</p>
+            <div class="row"><div><label>적용 범위</label><select name="scope">${Object.entries(SCOPE).filter(([k]) => k !== 'sales').map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select></div>
+              <div style="flex:2 1 200px"><label>무엇에 대한 피드백</label><input name="target" id="coach-target" placeholder="예: 마지막 답장 / 시안 「원형 컵」"></div></div>
+            <textarea name="text" id="coach-text" placeholder="예: 첫 답장이 너무 길어. 3문장 이내로. / 로고 글자가 너무 얇아서 간판에서 안 보여. 굵은 산세리프로."></textarea>
+            <div class="row" style="align-items:center"><label class="switch"><input type="checkbox" name="redo" checked> 바로 다시 하게 하기</label><div style="flex:0 0 auto"><button class="btn primary">피드백 저장</button></div></div>
+          </form>
+          <div id="ps-live" class="stack"></div>
+        </div>
+      </div>`;
+    $('#coach').onsubmit = async (e) => {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(e.target));
+      try {
+        await api(`/api/projects/${id}/coach`, { method: 'POST', body: { text: f.text, scope: f.scope, target: f.target, redo: Boolean(f.redo) } });
+        $('#coach-text').value = '';
+        $('#coach-target').value = '';
+        toast(f.redo ? '저장했습니다. 에이전트가 반영해서 다시 합니다.' : '학습 노트로 저장했습니다.');
+        refreshPracticeSide();
+      } catch (err) { toast(err.message); }
+    };
+    await refreshPracticeSide();
+  }
+
+  async function refreshPracticeSide() {
+    const box = $('#ps-live');
+    if (!box || !practiceId) return;
+    const [d, lessons] = await Promise.all([api(`/api/projects/${practiceId}`), api('/api/lessons')]);
+    const notes = d.messages.filter((m) => m.internal).slice(-6).reverse();
+    const mine = lessons.filter((l) => l.projectId === practiceId);
+    const busy = d.jobs.some((j) => ['queued', 'running'].includes(j.status));
+    box.innerHTML = `
+      <div class="card"><div class="item-row"><h3>진행 상황</h3>${statusBadge(d.project.status)}</div>
+        <small>${busy ? '● 에이전트가 작업 중입니다…' : '대기 중'} · 이 연습 비용 $${d.usage.toFixed(2)}</small></div>
+      <div class="card"><h3>시안</h3><div class="designs">${d.designs.slice().reverse().map((x) => `
+        <div class="stack"><iframe class="design-frame" sandbox="" loading="lazy" title="${esc(x.title)}" src="/api/designs/${x.id}/raw"></iframe>
+        <div><strong>${esc(x.title)}</strong> <span class="badge">${x.round}차</span>${x.review ? ` <small>검토 ${x.review.score}/10</small>` : ''}</div>
+        <div class="row" style="gap:6px"><a class="btn small" href="/api/designs/${x.id}/raw" target="_blank">크게</a><button class="btn small" data-coach="${esc(`시안 「${x.title}」(${x.round}차)`)}">이 시안에 피드백</button></div></div>`).join('') || '<span class="muted">아직 없음</span>'}</div></div>
+      <div class="card"><h3>에이전트 메모 · 내 코칭</h3><div class="list">${notes.map((m) => `<div class="item"><small>${m.from === 'owner' ? '내 코칭/지시' : '에이전트'} · ${when(m.createdAt)}</small><div class="pre">${esc(m.text)}</div></div>`).join('') || '<span class="muted">없음</span>'}</div></div>
+      <div class="card" id="ps-lessons"><h3>이 연습에서 생긴 학습 노트</h3><div class="list">${mine.map(lessonRow).join('') || '<span class="muted">없음</span>'}</div></div>`;
+    $$('[data-coach]', box).forEach((b) => (b.onclick = () => { $('#coach-target').value = b.dataset.coach; $('#coach [name="scope"]').value = 'design'; $('#coach-text').focus(); }));
+    bindLessons($('#ps-lessons'));
   }
 
   function svcRow(x) {

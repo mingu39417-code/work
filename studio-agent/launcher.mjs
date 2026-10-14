@@ -34,7 +34,7 @@ function openBrowser(url) {
 }
 
 function depsReady() {
-  return ['@anthropic-ai/sdk', 'nodemailer'].every((d) => fs.existsSync(path.join(here, 'node_modules', d, 'package.json')));
+  return ['@anthropic-ai/sdk', 'nodemailer', 'imapflow', 'mailparser'].every((d) => fs.existsSync(path.join(here, 'node_modules', d, 'package.json')));
 }
 
 async function alreadyRunning() {

@@ -6,10 +6,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { Vault } from './vault.mjs';
 
 export const COLLECTIONS = [
   'clients', 'projects', 'messages', 'designs', 'quotes', 'invoices',
-  'approvals', 'jobs', 'activity', 'leads', 'alerts', 'usage',
+  'approvals', 'jobs', 'activity', 'leads', 'alerts', 'usage', 'accounts', 'lessons',
 ];
 
 const ACTIVITY_LIMIT = 3000;
@@ -55,8 +56,10 @@ export function defaultSettings() {
       rushFeePercent: 30,
       extraRevisionPrice: 50000,
       conceptsPerRound: 2,
-      aiDisclosure: 'on_ask',
       paymentInfo: '',
+      businessInfo: '',
+      retention: '프로젝트 종료 후 3년 (분쟁 대응 목적), 이후 지체 없이 파기',
+      outreachDailyLimit: 20,
       extraInstructions: '',
     },
     autonomy: {
@@ -67,7 +70,6 @@ export function defaultSettings() {
       outreach: 'approve',
     },
     design: { selfReview: true },
-    smtp: { host: '', port: 587, secure: false, user: '', pass: '', from: '' },
     auth: { passwordHash: '' },
   };
 }
@@ -96,6 +98,7 @@ export class Store extends EventEmitter {
     this.file = path.join(dir, 'db.json');
     this.uploadsDir = path.join(dir, 'uploads');
     fs.mkdirSync(this.uploadsDir, { recursive: true });
+    this.vault = new Vault(dir);
     this.load();
   }
 

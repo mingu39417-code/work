@@ -79,3 +79,4 @@ a.item:hover { background: var(--surface-2); }
 
 .feed a { color: inherit; text-decoration: none; }
 .feed a:hover { text-decoration: underline; }
+.list .item .pre { flex: 1 1 auto; min-width: 0; }

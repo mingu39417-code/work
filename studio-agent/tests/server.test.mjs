@@ -56,7 +56,12 @@ test('공개 문의 → 고객 포털 → 시안은 샌드박스로만 열립니
 
   assert.equal((await call('/api/public/inquiry', { method: 'POST', body: { email: 'bad', description: '내용입니다' } })).status, 400);
   const png = `data:image/png;base64,${Buffer.from('fakepng').toString('base64')}`;
-  const r = await (await call('/api/public/inquiry', { method: 'POST', body: { name: '고객', email: 'c@x.kr', description: '포스터 문의합니다', serviceId: 'poster', images: [{ name: 'ref.png', dataUrl: png }] } })).json();
+  const body = { name: '고객', email: 'c@x.kr', description: '포스터 문의합니다', serviceId: 'poster', images: [{ name: 'ref.png', dataUrl: png }], marketingConsent: true };
+  assert.equal((await call('/api/public/inquiry', { method: 'POST', body })).status, 400, '개인정보 동의 없이는 접수 불가');
+  const r = await (await call('/api/public/inquiry', { method: 'POST', body: { ...body, privacyConsent: true } })).json();
+  const cl = store.findOne('clients', (c) => c.email === 'c@x.kr');
+  assert.ok(cl.privacyConsentAt);
+  assert.ok(cl.marketingConsent.at);
   assert.match(r.portalUrl, /^\/p\/[\w-]+$/);
   const token = r.portalUrl.split('/').pop();
   assert.equal(store.find('jobs', (j) => j.kind === 'agent').length, 1);
