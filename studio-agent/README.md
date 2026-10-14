@@ -16,7 +16,19 @@
 
 ## 1. 실행
 
-준비물: [Node.js](https://nodejs.org) 20 이상, [Claude API 키](https://console.anthropic.com) (API Keys 메뉴)
+준비물: [Node.js](https://nodejs.org) LTS (20 이상), [Claude API 키](https://console.anthropic.com) (API Keys 메뉴)
+
+**더블클릭으로 실행**
+
+| 컴퓨터 | 실행할 파일 |
+| --- | --- |
+| Windows | `start-windows.bat` |
+| Mac | `start-mac.command` — 처음 한 번은 **우클릭 → 열기 → 열기** (인터넷에서 받은 파일이라 그냥 더블클릭하면 막힙니다) |
+
+처음 실행하면 필요한 부품을 자동으로 설치하고(1~2분), 브라우저에 대시보드가 열립니다.
+검은 창(터미널)을 닫으면 프로그램이 꺼지니 쓰는 동안 열어 두세요. 이미 켜져 있을 때 다시 실행하면 브라우저만 열립니다.
+
+**터미널로 실행** (같은 동작)
 
 ```bash
 cd studio-agent
@@ -113,6 +125,7 @@ npm test     # 가짜 Claude로 전체 흐름 · 규칙 · 서버를 검사 (API
 
 | 파일 | 역할 |
 | --- | --- |
+| `start-windows.bat` · `start-mac.command` · `launcher.mjs` | 더블클릭 실행 (부품 설치 → 서버 → 브라우저) |
 | `server.mjs` | HTTP 서버 · 라우팅 · 인증 |
 | `lib/agent.mjs` | 고객 응대 · 영업 에이전트 (도구 정의와 실행 루프) |
 | `lib/designer.mjs` | 디자인 작업 (방향 → 제작 → 검토) |
