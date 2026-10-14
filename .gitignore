@@ -13,3 +13,6 @@ npm-debug.log*
 Thumbs.db
 desktop.ini
 /package-lock.json
+
+# 스튜디오 에이전트 데이터 (API 키 · 고객 정보 — 절대 커밋하지 않음)
+/studio-agent/data/

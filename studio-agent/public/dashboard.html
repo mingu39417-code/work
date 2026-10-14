@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>스튜디오 대시보드</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Ccircle cx=%2216%22 cy=%2216%22 r=%2214%22 fill=%22%233b5bdb%22/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/dashboard.css">
+</head>
+<body>
+<!-- 로그인 / 처음 설정 -->
+<div id="auth" class="auth hidden">
+  <form class="card stack" id="auth-form">
+    <h1 id="auth-title">로그인</h1>
+    <p class="muted" id="auth-help"></p>
+    <div class="field"><label for="pw">비밀번호</label><input id="pw" type="password" autocomplete="current-password" required></div>
+    <p class="error-text" id="auth-err" role="alert"></p>
+    <button class="btn primary" type="submit">계속</button>
+  </form>
+</div>
+
+<div id="app" class="layout hidden">
+  <nav class="side">
+    <div class="brand"><span class="dot" id="agent-dot"></span><strong id="brand">스튜디오</strong></div>
+    <a href="#/" data-nav="overview">개요</a>
+    <a href="#/approvals" data-nav="approvals">승인 대기 <span class="count" id="nav-approvals"></span></a>
+    <a href="#/projects" data-nav="projects">프로젝트</a>
+    <a href="#/sales" data-nav="sales">영업</a>
+    <a href="#/activity" data-nav="activity">활동 기록</a>
+    <a href="#/settings" data-nav="settings">설정</a>
+    <div class="side-foot">
+      <button class="btn small" id="toggle-agent">일시정지</button>
+      <button class="btn small" id="logout">로그아웃</button>
+    </div>
+  </nav>
+  <main class="main" id="view"></main>
+</div>
+
+<script src="/assets/common.js"></script>
+<script src="/assets/dashboard.js"></script>
+</body>
+</html>

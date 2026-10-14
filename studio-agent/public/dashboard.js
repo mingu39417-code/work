@@ -1,0 +1,479 @@
+// 대표용 대시보드 — 에이전트가 하는 일을 실시간으로 보고, 승인 · 지시 · 직접 개입 · 설정을 합니다.
+(() => {
+  let META = { statuses: {}, autonomy: {}, models: {} };
+  let OV = null;
+  let currentView = null;
+  let refreshTimer = null;
+
+  const STATUS_TONE = { inquiry: 'warn', quoted: 'accent', accepted: 'accent', in_progress: 'accent', review: 'warn', revision: 'accent', delivered: 'ok', completed: 'ok', lost: '', on_hold: '' };
+  const FROM = { client: '고객', agent: '에이전트', owner: '대표(나)', system: '시스템' };
+  const INV_KIND = { deposit: '계약금', final: '잔금', extra_revision: '추가 수정', extra: '추가 작업' };
+  const LEAD_STATUS = { new: '신규', needs_info: '정보 부족', contacted: '연락함', replied: '답장 받음', won: '수주', lost: '실패' };
+  const cur = () => OV?.currency ?? 'KRW';
+  const statusBadge = (s) => `<span class="badge ${STATUS_TONE[s] ?? ''}">${esc(META.statuses[s] ?? s)}</span>`;
+
+  // ── 로그인 ──
+  async function boot() {
+    const st = await api('/api/auth/status');
+    if (st.authed) return start();
+    $('#auth').classList.remove('hidden');
+    if (st.setup) {
+      $('#auth-title').textContent = '처음 설정';
+      $('#auth-help').textContent = '대시보드 비밀번호를 정하세요 (8자 이상). 이 비밀번호로 API 키와 고객 정보를 보호합니다.';
+      $('#pw').autocomplete = 'new-password';
+    }
+    $('#auth-form').onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        await api(st.setup ? '/api/auth/setup' : '/api/auth/login', { method: 'POST', body: { password: $('#pw').value } });
+        $('#auth').classList.add('hidden');
+        start();
+      } catch (err) {
+        $('#auth-err').textContent = err.message;
+      }
+    };
+  }
+
+  async function start() {
+    $('#app').classList.remove('hidden');
+    META = await api('/api/meta');
+    await refreshOverview();
+    window.addEventListener('hashchange', route);
+    route();
+    connectEvents();
+    $('#logout').onclick = async () => { await api('/api/auth/logout', { method: 'POST', body: {} }); location.reload(); };
+    $('#toggle-agent').onclick = async () => {
+      await api(OV.agent.paused ? '/api/agent/resume' : '/api/agent/pause', { method: 'POST', body: {} });
+      await refreshOverview();
+      if (currentView === 'overview') route();
+    };
+  }
+
+  async function refreshOverview() {
+    OV = await api('/api/overview');
+    $('#brand').textContent = OV.studioName;
+    const dot = $('#agent-dot');
+    dot.className = `dot ${!OV.agent.hasApiKey || OV.agent.paused ? 'off' : OV.agent.running ? 'busy' : 'on'}`;
+    dot.title = !OV.agent.hasApiKey ? 'API 키 없음' : OV.agent.paused ? '일시정지' : OV.agent.running ? '작업 중' : '대기 중';
+    $('#toggle-agent').textContent = OV.agent.paused ? '다시 시작' : '일시정지';
+    $('#nav-approvals').textContent = OV.kpi.pendingApprovals || '';
+  }
+
+  function connectEvents() {
+    const es = new EventSource('/api/events');
+    es.addEventListener('activity', (e) => {
+      const row = JSON.parse(e.data);
+      const feed = $('#live-feed');
+      if (feed) feed.insertAdjacentHTML('afterbegin', feedItem(row));
+      scheduleRefresh();
+    });
+    es.addEventListener('change', scheduleRefresh);
+    es.onerror = () => setTimeout(() => { if (es.readyState === 2) connectEvents(); }, 5000);
+  }
+
+  // 입력 중일 때는 화면을 다시 그리지 않습니다.
+  function busyTyping() {
+    const a = document.activeElement;
+    if (a && ['INPUT', 'TEXTAREA', 'SELECT'].includes(a.tagName) && $('#view').contains(a)) return true;
+    return $$('#view textarea').some((t) => t.value.trim() && !t.dataset.prefilled);
+  }
+
+  function scheduleRefresh() {
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(async () => {
+      await refreshOverview();
+      if (['overview', 'approvals', 'projects', 'project', 'sales', 'activity'].includes(currentView) && !busyTyping()) route(true);
+    }, 700);
+  }
+
+  // ── 라우팅 ──
+  async function route(soft = false) {
+    const hash = location.hash.replace(/^#/, '') || '/';
+    const [, a, b] = hash.split('/');
+    const view = a === 'projects' && b ? 'project' : a || 'overview';
+    currentView = view;
+    $$('.side a').forEach((x) => x.classList.toggle('on', x.dataset.nav === (view === 'project' ? 'projects' : view)));
+    const y = window.scrollY;
+    try {
+      const fn = { overview, approvals, projects, project: () => projectView(b), sales, activity, settings }[view];
+      if (fn) await fn();
+      else $('#view').innerHTML = '<div class="empty">없는 화면입니다</div>';
+    } catch (err) {
+      if (err.status === 401) return location.reload();
+      $('#view').innerHTML = `<div class="card error-text">${esc(err.message)}</div>`;
+    }
+    if (soft) window.scrollTo({ top: y });
+  }
+
+  const feedItem = (a) => `<div class="item k-${esc(a.kind)}"><span class="t">${when(a.createdAt)}</span><span>${a.projectId ? `<a href="#/projects/${a.projectId}">${esc(a.text)}</a>` : esc(a.text)}</span></div>`;
+
+  // ── 개요 ──
+  async function overview() {
+    const [projects, alerts, approvals, activity, usage] = await Promise.all([
+      api('/api/projects'), api('/api/alerts'), api('/api/approvals'), api('/api/activity'), api('/api/usage'),
+    ]);
+    const k = OV.kpi;
+    const pct = k.dailyBudget ? Math.min(100, (k.spentToday / k.dailyBudget) * 100) : 0;
+    const pending = approvals.filter((x) => x.status === 'pending');
+    const maxDay = Math.max(0.01, ...usage.map((u) => u.cost));
+    const setup = [];
+    if (!OV.agent.hasApiKey) setup.push('<a href="#/settings">Claude API 키 입력</a>');
+    const settingsData = !OV.agent.hasApiKey ? null : await api('/api/settings');
+    if (settingsData && !settingsData.profile.ownerName) setup.push('<a href="#/settings">프로필(이름 · 소개 · 포트폴리오) 작성</a>');
+
+    $('#view').innerHTML = `
+      <div class="page-head"><h1>개요</h1>
+        <div class="row" style="flex:0 0 auto;gap:8px;align-items:center">
+          <span class="muted">${OV.agent.paused ? '⏸ 일시정지됨' : OV.agent.running ? `● 작업 중: ${esc(OV.agent.running.kind)}` : `● 대기 중 · 예약 ${OV.agent.queued}건`}</span>
+        </div>
+      </div>
+      ${setup.length ? `<div class="card alert urgent" style="margin-bottom:16px"><strong>시작하려면</strong><ol style="margin:6px 0 0">${setup.map((s) => `<li>${s}</li>`).join('')}<li>문의 양식 주소 <a href="/" target="_blank">${location.origin}/</a> 를 홈페이지 · SNS · 크몽 프로필에 걸어 두세요</li></ol></div>` : ''}
+      <div class="kpis">
+        <div class="card kpi"><div class="label">이번 달 입금</div><div class="value">${money(k.revenueMonth, cur())}</div><div class="sub">미수금 ${money(k.outstanding, cur())}</div></div>
+        <div class="card kpi"><div class="label">견적 진행 중</div><div class="value">${money(k.pipeline, cur())}</div><div class="sub">수락 대기 견적 합계</div></div>
+        <div class="card kpi"><div class="label">진행 프로젝트</div><div class="value">${k.activeProjects}</div><div class="sub">새 문의 ${k.newInquiries}건</div></div>
+        <div class="card kpi"><div class="label">승인 대기</div><div class="value">${k.pendingApprovals}</div><div class="sub">알림 ${k.openAlerts}건</div></div>
+        <div class="card kpi"><div class="label">오늘 API 비용</div><div class="value">$${k.spentToday.toFixed(2)}</div><div class="sub">한도 $${k.dailyBudget} · 이번 달 $${k.spentMonth.toFixed(2)}</div><div class="meter"><i style="width:${pct}%"></i></div></div>
+      </div>
+      <div class="grid2">
+        <div class="stack">
+          ${alerts.length ? `<div class="card"><h2>확인 필요</h2><div class="list">${alerts.map((a) => `
+            <div class="item alert ${a.level === 'urgent' ? 'urgent' : ''}" style="padding-left:10px">
+              <div class="item-row"><span>${a.projectId ? `<a href="#/projects/${a.projectId}">${esc(a.text)}</a>` : esc(a.text)}</span>
+              <button class="btn small" data-dismiss="${a.id}">확인</button></div>
+              <small>${when(a.createdAt)}</small></div>`).join('')}</div></div>` : ''}
+          ${pending.length ? `<div class="card"><div class="item-row"><h2>승인 대기</h2><a href="#/approvals">전체 보기</a></div><div class="list">${pending.slice(0, 5).map((a) => `
+            <a class="item" href="#/approvals"><div class="item-row"><span class="item-title">${esc(META.autonomy[a.category])}</span><small>${when(a.createdAt)}</small></div><small>${esc(a.project ?? a.lead ?? '')} — ${esc(a.summary)}</small></a>`).join('')}</div></div>` : ''}
+          <div class="card"><div class="item-row"><h2>최근 프로젝트</h2><a href="#/projects">전체 보기</a></div>
+            <div class="list">${projects.slice(0, 8).map((p) => `
+              <a class="item" href="#/projects/${p.id}"><div class="item-row"><span class="item-title">${esc(p.title)}</span>${statusBadge(p.status)}</div>
+              <small>${p.lastMessage ? `${esc(FROM[p.lastMessage.from])}: ${esc(p.lastMessage.text)} · ${when(p.lastMessage.at)}` : ''}</small></a>`).join('') || '<div class="empty">아직 문의가 없습니다</div>'}</div></div>
+          <div class="card"><h2>최근 30일 API 비용</h2>
+            <div class="chart" title="일별 비용">${usage.map((u) => `<i style="height:${(u.cost / maxDay) * 100}%" title="${u.day}: $${u.cost.toFixed(2)} (${u.calls}회)"></i>`).join('') || '<span class="muted">기록 없음</span>'}</div></div>
+        </div>
+        <div class="card"><h2>실시간 활동</h2><div class="list feed" id="live-feed">${activity.slice(0, 60).map(feedItem).join('') || '<div class="empty">아직 활동이 없습니다</div>'}</div></div>
+      </div>`;
+    $$('[data-dismiss]').forEach((b) => (b.onclick = async () => { await api(`/api/alerts/${b.dataset.dismiss}/dismiss`, { method: 'POST', body: {} }); scheduleRefresh(); }));
+  }
+
+  // ── 승인 대기 ──
+  function approvalFields(a) {
+    const act = a.action;
+    if (act.type === 'outreach') {
+      return `<div class="field"><label>제목</label><input data-k="subject" value="${esc(act.subject)}"></div>
+              <div class="field"><label>본문</label><textarea data-k="body" data-prefilled="1">${esc(act.body)}</textarea></div>`;
+    }
+    let extra = '';
+    if (act.type === 'quote') extra = `<table class="table">${act.line_items.map((i) => `<tr><td>${esc(i.name)}</td><td style="text-align:right">${money(i.price, cur())}</td></tr>`).join('')}<tr><td><strong>합계 · ${act.timeline_days}일 · 수정 ${act.revisions_included}회</strong></td><td style="text-align:right"><strong>${money(act.total, cur())}</strong></td></tr></table>`;
+    if (act.type === 'invoice') extra = `<p><strong>${INV_KIND[act.kind] ?? act.kind} ${money(act.amount, cur())}</strong> — ${esc(act.description)}</p>`;
+    if (act.type === 'share_designs') extra = `<div class="designs">${act.design_ids.map((id) => `<iframe class="design-frame" sandbox="" loading="lazy" src="/api/designs/${id}/raw"></iframe>`).join('')}</div>`;
+    return `${extra}<div class="field" style="margin-top:10px"><label>고객에게 보낼 메시지 (고쳐서 승인할 수 있습니다)</label><textarea data-k="message" data-prefilled="1">${esc(act.message)}</textarea></div>`;
+  }
+
+  async function approvals() {
+    const list = await api('/api/approvals');
+    const pending = list.filter((a) => a.status === 'pending');
+    const done = list.filter((a) => a.status !== 'pending').slice(0, 30);
+    $('#view').innerHTML = `
+      <div class="page-head"><h1>승인 대기</h1><a class="btn small" href="#/settings">자율 수준 바꾸기</a></div>
+      <p class="muted">설정에서 '승인 후 실행'으로 둔 일은 여기서 확인 후 나갑니다. 반려하면서 의견을 남기면 에이전트가 고쳐서 다시 올립니다.</p>
+      <div class="stack">${pending.map((a) => `
+        <div class="card approval" data-id="${a.id}">
+          <div class="item-row"><h3>${esc(META.autonomy[a.category])} · ${a.projectId ? `<a href="#/projects/${a.projectId}">${esc(a.project)}</a>` : esc(a.lead ?? '')}</h3><small>${when(a.createdAt)}</small></div>
+          ${approvalFields(a)}
+          <div class="field"><label>반려 의견 (반려할 때만)</label><input data-k="feedback" placeholder="예: 가격을 40만 원으로, 말투를 더 부드럽게"></div>
+          <div class="row" style="gap:8px;flex-wrap:nowrap"><button class="btn primary" data-act="approve">승인하고 보내기</button><button class="btn danger" data-act="reject">반려</button></div>
+        </div>`).join('') || '<div class="card empty">승인할 항목이 없습니다 🎉</div>'}</div>
+      <h2 style="margin-top:28px">처리 내역</h2>
+      <div class="card"><div class="list">${done.map((a) => `<div class="item"><div class="item-row"><span>${esc(META.autonomy[a.category])} · ${esc(a.project ?? a.lead ?? '')} — ${esc(a.summary)}</span><span class="badge ${a.status === 'approved' ? 'ok' : 'bad'}">${a.status === 'approved' ? '승인' : a.status === 'rejected' ? '반려' : '실패'}</span></div>${a.feedback ? `<small>의견: ${esc(a.feedback)}</small>` : ''}${a.result ? `<small> ${esc(a.result)}</small>` : ''}</div>`).join('') || '<div class="empty">없음</div>'}</div></div>`;
+    $$('.approval').forEach((card) => {
+      const val = (k) => card.querySelector(`[data-k="${k}"]`)?.value;
+      card.querySelector('[data-act="approve"]').onclick = async (e) => {
+        e.target.disabled = true;
+        try {
+          const r = await api(`/api/approvals/${card.dataset.id}/approve`, { method: 'POST', body: { message: val('message'), subject: val('subject'), body: val('body') } });
+          toast(r.result);
+        } catch (err) { toast(err.message); }
+        route();
+      };
+      card.querySelector('[data-act="reject"]').onclick = async () => {
+        await api(`/api/approvals/${card.dataset.id}/reject`, { method: 'POST', body: { feedback: val('feedback') } });
+        toast(val('feedback') ? '반려했습니다. 에이전트가 의견대로 다시 작성합니다.' : '반려했습니다.');
+        route();
+      };
+    });
+  }
+
+  // ── 프로젝트 목록 ──
+  async function projects() {
+    const list = await api('/api/projects');
+    const filter = sessionStorage.getItem('pfilter') ?? 'active';
+    const groups = { active: (p) => !['completed', 'lost'].includes(p.status), all: () => true, done: (p) => ['completed', 'lost'].includes(p.status) };
+    const rows = list.filter(groups[filter] ?? groups.active);
+    $('#view').innerHTML = `
+      <div class="page-head"><h1>프로젝트</h1>
+        <div class="row" style="flex:0 0 auto;gap:8px">
+          <div class="seg">${[['active', '진행 중'], ['done', '끝남'], ['all', '전체']].map(([k, l]) => `<button data-f="${k}" class="${k === filter ? 'on' : ''}">${l}</button>`).join('')}</div>
+          <button class="btn primary small" id="new-project">직접 추가</button>
+        </div></div>
+      <form class="card hidden stack" id="np" style="margin-bottom:16px">
+        <p class="muted">카톡 · 전화 · 크몽 등 다른 곳으로 온 문의를 넣으면 에이전트가 이어서 응대합니다(고객 이메일이 있으면 포털 링크를 보냅니다).</p>
+        <div class="row"><div><label>고객 이름</label><input name="name" required></div><div><label>이메일</label><input name="email" type="email"></div><div><label>회사</label><input name="company"></div></div>
+        <div><label>문의 내용</label><textarea name="description" required></textarea></div>
+        <div><button class="btn primary">추가하고 에이전트에게 맡기기</button></div>
+      </form>
+      <div class="card table-wrap"><table class="table">
+        <thead><tr><th>프로젝트</th><th>고객</th><th>상태</th><th>자동</th><th>최근 대화</th></tr></thead>
+        <tbody>${rows.map((p) => `<tr class="click" data-href="#/projects/${p.id}">
+          <td><strong>${esc(p.title)}</strong>${p.pendingApprovals ? ` <span class="badge warn">승인 ${p.pendingApprovals}</span>` : ''}${p.unpaid ? ` <span class="badge bad">미수 ${p.unpaid}</span>` : ''}</td>
+          <td>${esc(p.client?.name)}<br><small>${esc(p.client?.company ?? '')}</small></td>
+          <td>${statusBadge(p.status)}</td>
+          <td>${p.autopilot ? '<span class="badge ok">켜짐</span>' : '<span class="badge">꺼짐</span>'}</td>
+          <td><small>${p.lastMessage ? `${esc(FROM[p.lastMessage.from])}: ${esc(p.lastMessage.text)}<br>${when(p.lastMessage.at)}` : ''}</small></td></tr>`).join('') || '<tr><td colspan="5" class="empty">프로젝트가 없습니다</td></tr>'}</tbody></table></div>`;
+    $$('[data-f]').forEach((b) => (b.onclick = () => { sessionStorage.setItem('pfilter', b.dataset.f); route(); }));
+    $$('tr[data-href]').forEach((tr) => (tr.onclick = () => (location.hash = tr.dataset.href)));
+    $('#new-project').onclick = () => $('#np').classList.toggle('hidden');
+    $('#np').onsubmit = async (e) => {
+      e.preventDefault();
+      const r = await api('/api/projects', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) });
+      location.hash = `#/projects/${r.id}`;
+    };
+  }
+
+  // ── 프로젝트 상세 ──
+  function msgBubble(m) {
+    const cls = m.internal ? 'internal' : m.from === 'client' ? 'them' : m.from === 'system' ? 'system' : 'me';
+    const imgs = (m.attachments ?? []).map((a) => `<a href="/api/uploads/${a.file}" target="_blank"><img class="attach" src="/api/uploads/${a.file}" alt="${esc(a.name)}"></a>`).join('');
+    const refs = [m.quoteId && '견적서', m.invoiceId && '청구서', m.designIds?.length && `시안 ${m.designIds.length}개`, m.emailed && '이메일 발송됨'].filter(Boolean).join(' · ');
+    const label = m.internal ? (m.from === 'owner' ? '대표 지시 (고객에게 안 보임)' : '에이전트 메모 (고객에게 안 보임)') : FROM[m.from];
+    return `<div class="bubble ${cls}">${cls !== 'system' ? `<span class="meta">${esc(label)} · ${when(m.createdAt)}${refs ? ` · ${refs}` : ''}</span>` : ''}${esc(m.text)}${imgs}</div>`;
+  }
+
+  async function projectView(id) {
+    const d = await api(`/api/projects/${id}`);
+    const p = d.project;
+    const mode = sessionStorage.getItem('compose') ?? 'instruct';
+    $('#view').innerHTML = `
+      <div class="page-head">
+        <div><a href="#/projects" class="muted">← 프로젝트</a><h1>${esc(p.title)}</h1>
+          <small>${esc(d.client.name)}${d.client.company ? ` · ${esc(d.client.company)}` : ''} · ${esc(d.client.email || '이메일 없음')} · 비용 $${d.usage.toFixed(2)}</small></div>
+        <div class="row" style="flex:0 0 auto;gap:8px;align-items:center">
+          <label class="switch"><input type="checkbox" id="autopilot" ${p.autopilot ? 'checked' : ''}> 자동 응대</label>
+          <select id="status" style="width:auto">${Object.entries(META.statuses).map(([k, v]) => `<option value="${k}" ${k === p.status ? 'selected' : ''}>${v}</option>`).join('')}</select>
+          <button class="btn small" id="copy-portal">고객 포털 링크 복사</button>
+          <a class="btn small" href="${esc(d.portalUrl)}" target="_blank" rel="noopener">포털 보기</a>
+        </div>
+      </div>
+      <div class="grid-detail">
+        <div class="stack">
+          <div class="card"><div class="thread-box"><div class="thread">${d.messages.map(msgBubble).join('') || '<div class="empty">메시지 없음</div>'}</div></div></div>
+          <form class="card stack" id="compose">
+            <div class="seg"><button type="button" data-m="instruct" class="${mode === 'instruct' ? 'on' : ''}">에이전트에게 지시</button><button type="button" data-m="message" class="${mode === 'message' ? 'on' : ''}">고객에게 직접 보내기</button></div>
+            <textarea id="compose-text" placeholder="${mode === 'instruct' ? '예: 이 고객은 단골이니 10% 할인해서 다시 견적 보내 줘 / 다음 시안은 더 미니멀하게' : '고객에게 보낼 메시지 (스튜디오 이름으로 나갑니다)'}"></textarea>
+            <div><button class="btn primary">${mode === 'instruct' ? '지시하기' : '보내기'}</button></div>
+          </form>
+        </div>
+        <div class="stack">
+          <div class="card"><h3>브리프</h3><p class="pre">${esc(p.brief || '아직 정리되지 않았습니다.')}</p>
+            <small>예산 ${esc(p.budget || '-')} · 일정 ${esc(p.deadline || '-')} · 시안 ${p.designRounds}차 진행 (추가 수정 허용 ${p.extraRounds}회)</small>
+            <div style="margin-top:6px"><button class="btn small" id="extra-round">추가 수정 1회 허용</button></div></div>
+          ${d.approvals.filter((a) => a.status === 'pending').length ? `<div class="card alert"><strong>승인 대기 ${d.approvals.filter((a) => a.status === 'pending').length}건</strong> — <a href="#/approvals">확인하기</a></div>` : ''}
+          <div class="card"><h3>시안</h3><div class="designs">${d.designs.slice().reverse().map((x) => `
+            <div class="stack"><iframe class="design-frame" sandbox="" loading="lazy" title="${esc(x.title)}" src="/api/designs/${x.id}/raw"></iframe>
+            <div><strong>${esc(x.title)}</strong> <span class="badge">${x.round}차</span> ${x.shared ? '<span class="badge accent">공유됨</span>' : '<span class="badge">미공유</span>'} ${x.approved ? '<span class="badge ok">확정</span>' : ''}</div>
+            ${x.review ? `<small>검토 ${x.review.score}/10${x.review.revised ? ' (수정 반영)' : ''} — ${esc(x.review.summary)}</small>` : ''}
+            <div class="row" style="gap:6px"><a class="btn small" href="/api/designs/${x.id}/raw" target="_blank">크게</a><a class="btn small" href="/api/designs/${x.id}/download">받기</a></div></div>`).join('') || '<span class="muted">아직 없음</span>'}</div></div>
+          <div class="card"><h3>견적</h3>${d.quotes.map((q) => `<div class="item-row"><span>${money(q.total, cur())} · ${q.timelineDays}일 · 수정 ${q.revisions}회</span><span class="badge ${q.status === 'accepted' ? 'ok' : ''}">${{ sent: '발송', accepted: '수락', superseded: '대체됨' }[q.status] ?? q.status}</span></div>`).join('') || '<span class="muted">없음</span>'}</div>
+          <div class="card"><h3>청구 · 입금</h3>${d.invoices.map((i) => `<div class="item-row" style="margin-bottom:6px"><span>${INV_KIND[i.kind] ?? i.kind} ${money(i.amount, cur())}<br><small>기한 ${i.dueDate}${i.clientNotified ? ' · 고객이 입금 알림' : ''}</small></span>
+              ${i.status === 'sent' ? `<span class="row" style="gap:4px;flex:0 0 auto"><button class="btn small primary" data-paid="${i.id}">입금 확인</button><button class="btn small danger" data-cancel="${i.id}">취소</button></span>` : `<span class="badge ${i.status === 'paid' ? 'ok' : ''}">${i.status === 'paid' ? '입금 완료' : '취소'}</span>`}</div>`).join('') || '<span class="muted">없음</span>'}</div>
+          <div class="card"><h3>작업</h3><div class="list">${d.jobs.slice().reverse().slice(0, 8).map((j) => `<div class="item"><div class="item-row"><span>${esc(j.kind)} ${(j.payload.events ?? []).map((e) => e.kind).join(', ')}</span><span class="badge ${j.status === 'failed' ? 'bad' : j.status === 'done' ? 'ok' : ''}">${esc(j.status)}</span></div>${j.status === 'queued' ? `<small>예정 ${when(j.runAt)}</small>` : ''}${j.error ? `<small class="error-text">${esc(j.error)}</small>` : ''}</div>`).join('') || '<span class="muted">없음</span>'}</div></div>
+        </div>
+      </div>`;
+    const tb = $('.thread-box');
+    tb.scrollTop = tb.scrollHeight;
+    const patch = (body) => api(`/api/projects/${id}`, { method: 'PATCH', body });
+    $('#autopilot').onchange = async (e) => { await patch({ autopilot: e.target.checked }); toast(e.target.checked ? '에이전트가 다시 응대합니다' : '자동 응대를 껐습니다. 직접 응대하세요.'); };
+    $('#status').onchange = async (e) => { await patch({ status: e.target.value }); toast('상태를 바꿨습니다'); };
+    $('#extra-round').onclick = async () => { await patch({ extraRounds: p.extraRounds + 1 }); toast('추가 수정 1회를 허용했습니다'); route(); };
+    $('#copy-portal').onclick = async () => { await navigator.clipboard.writeText(d.portalUrl); toast('복사했습니다'); };
+    $$('[data-m]').forEach((b) => (b.onclick = () => { sessionStorage.setItem('compose', b.dataset.m); route(); }));
+    $('#compose').onsubmit = async (e) => {
+      e.preventDefault();
+      const text = $('#compose-text').value.trim();
+      if (!text) return;
+      await api(`/api/projects/${id}/${mode === 'instruct' ? 'instruct' : 'message'}`, { method: 'POST', body: { text } });
+      $('#compose-text').value = '';
+      toast(mode === 'instruct' ? '지시를 전달했습니다. 곧 에이전트가 처리합니다.' : '보냈습니다');
+      route();
+    };
+    $$('[data-paid]').forEach((b) => (b.onclick = async () => { if (!confirm('입금을 확인했나요? 에이전트가 다음 단계를 진행합니다.')) return; await api(`/api/invoices/${b.dataset.paid}/paid`, { method: 'POST', body: {} }); route(); }));
+    $$('[data-cancel]').forEach((b) => (b.onclick = async () => { if (!confirm('이 청구서를 취소할까요?')) return; await api(`/api/invoices/${b.dataset.cancel}/cancel`, { method: 'POST', body: {} }); route(); }));
+  }
+
+  // ── 영업 ──
+  async function sales() {
+    const leads = await api('/api/leads');
+    $('#view').innerHTML = `
+      <div class="page-head"><h1>영업</h1></div>
+      <p class="muted">연락해 보고 싶은 가게 · 브랜드 · 회사를 넣으면 에이전트가 그곳에 맞춘 첫 제안 메시지를 씁니다. 스팸이 되지 않도록 한 곳에 한 번, 구체적인 아이디어와 거절 방법을 담아 보냅니다.
+      기본값은 '승인 후 발송'입니다(설정 → 자율 수준).</p>
+      <form class="card stack" id="lead-form">
+        <div class="row"><div><label>회사 · 브랜드</label><input name="company"></div><div><label>담당자</label><input name="name"></div><div><label>이메일</label><input name="email" type="email"></div></div>
+        <div><label>웹사이트 · 인스타그램</label><input name="website" placeholder="https://"></div>
+        <div><label>메모 (무엇을 하는 곳인지, 왜 디자인이 필요해 보이는지 — 구체적일수록 좋은 메시지가 나옵니다)</label><textarea name="notes"></textarea></div>
+        <div class="row" style="align-items:center"><label class="switch"><input type="checkbox" name="autoOutreach" checked> 추가하자마자 제안 메시지 작성</label><div style="flex:0 0 auto"><button class="btn primary">리드 추가</button></div></div>
+      </form>
+      <div class="stack" style="margin-top:16px">${leads.map((l) => `
+        <div class="card" data-lead="${l.id}">
+          <div class="item-row"><h3>${esc(l.company || l.name)} ${l.company && l.name ? `<small>· ${esc(l.name)}</small>` : ''}</h3>
+            <select data-status style="width:auto">${Object.entries(LEAD_STATUS).map(([k, v]) => `<option value="${k}" ${k === l.status ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+          <small>${esc(l.email || '이메일 없음')} ${l.website ? `· <a href="${esc(l.website)}" target="_blank" rel="noopener">${esc(l.website)}</a>` : ''}</small>
+          ${l.notes ? `<p class="pre" style="margin-top:6px">${esc(l.notes)}</p>` : ''}
+          ${l.lastOutreach ? `<details style="margin-top:6px"><summary>${l.lastOutreach.emailed ? '보낸 메시지' : '보낼 메시지 (직접 복사해서 보내세요)'} · ${when(l.lastOutreach.at)}</summary><p><strong>${esc(l.lastOutreach.subject)}</strong></p><p class="pre">${esc(l.lastOutreach.body)}</p><button class="btn small" data-copy>복사</button></details>` : ''}
+          ${(l.agentNotes ?? []).length ? `<small>에이전트 메모: ${esc(l.agentNotes.at(-1).text)}</small>` : ''}
+          <div class="row" style="margin-top:8px;align-items:center"><input data-instr placeholder="(선택) 지시: 예) 리뉴얼 오픈 축하로 시작해 줘"><div style="flex:0 0 auto"><button class="btn small" data-outreach>제안 메시지 ${l.lastOutreach ? '다시 ' : ''}작성</button></div></div>
+        </div>`).join('') || '<div class="card empty">리드가 없습니다</div>'}</div>`;
+    $('#lead-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const body = Object.fromEntries(new FormData(e.target));
+      body.autoOutreach = Boolean(body.autoOutreach);
+      try { await api('/api/leads', { method: 'POST', body }); toast('추가했습니다'); e.target.reset(); route(); } catch (err) { toast(err.message); }
+    };
+    $$('[data-lead]').forEach((card) => {
+      const id = card.dataset.lead;
+      card.querySelector('[data-status]').onchange = (e) => api(`/api/leads/${id}`, { method: 'PATCH', body: { status: e.target.value } });
+      card.querySelector('[data-outreach]').onclick = async () => { await api(`/api/leads/${id}/outreach`, { method: 'POST', body: { instruction: card.querySelector('[data-instr]').value } }); toast('작성을 맡겼습니다'); };
+      const copy = card.querySelector('[data-copy]');
+      if (copy) copy.onclick = () => { const det = copy.closest('details'); navigator.clipboard.writeText(`${det.querySelector('strong').textContent}\n\n${det.querySelector('.pre').textContent}`); toast('복사했습니다'); };
+    });
+  }
+
+  // ── 활동 기록 ──
+  async function activity() {
+    const [rows, jobs] = await Promise.all([api('/api/activity'), api('/api/jobs')]);
+    $('#view').innerHTML = `
+      <div class="page-head"><h1>활동 기록</h1></div>
+      <div class="grid2">
+        <div class="card"><h2>활동</h2><div class="list feed" id="live-feed">${rows.map(feedItem).join('') || '<div class="empty">없음</div>'}</div></div>
+        <div class="card"><h2>작업 대기열</h2><div class="list">${jobs.map((j) => `
+          <div class="item"><div class="item-row"><span>${esc(j.kind)} ${(j.payload.events ?? []).map((e) => esc(e.kind)).join(', ')} ${j.payload.projectId ? `<a href="#/projects/${j.payload.projectId}">보기</a>` : ''}</span>
+          <span class="badge ${j.status === 'failed' ? 'bad' : j.status === 'done' ? 'ok' : j.status === 'running' ? 'accent' : ''}">${esc(j.status)}</span></div>
+          <small>${j.status === 'queued' ? `예정 ${when(j.runAt)}` : when(j.updatedAt)}${j.attempts ? ` · 시도 ${j.attempts}` : ''}</small>
+          ${j.error ? `<div class="error-text">${esc(j.error)}</div>` : ''}
+          ${['failed', 'cancelled'].includes(j.status) ? `<button class="btn small" data-retry="${j.id}">다시 시도</button>` : ''}
+          ${j.status === 'queued' ? `<button class="btn small" data-cancel="${j.id}">취소</button>` : ''}</div>`).join('') || '<div class="empty">없음</div>'}</div></div>
+      </div>`;
+    $$('[data-retry]').forEach((b) => (b.onclick = async () => { await api(`/api/jobs/${b.dataset.retry}/retry`, { method: 'POST', body: {} }); route(); }));
+    $$('[data-cancel]').forEach((b) => (b.onclick = async () => { await api(`/api/jobs/${b.dataset.cancel}/cancel`, { method: 'POST', body: {} }); route(); }));
+  }
+
+  // ── 설정 ──
+  async function settings() {
+    const s = await api('/api/settings');
+    const f = (label, name, value, attrs = '') => `<div class="field"><label>${label}</label><input name="${name}" value="${esc(value)}" ${attrs}></div>`;
+    const ta = (label, name, value, ph = '') => `<div class="field"><label>${label}</label><textarea name="${name}" placeholder="${esc(ph)}">${esc(value)}</textarea></div>`;
+    const sel = (label, name, value, opts) => `<div class="field"><label>${label}</label><select name="${name}">${Object.entries(opts).map(([k, v]) => `<option value="${k}" ${String(k) === String(value) ? 'selected' : ''}>${v}</option>`).join('')}</select></div>`;
+    const efforts = { low: 'low (빠름 · 저렴)', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max (최고 품질 · 비쌈)' };
+    $('#view').innerHTML = `
+      <div class="page-head"><h1>설정</h1><button class="btn primary" id="save">저장</button></div>
+      <form id="sf" class="stack">
+        <div class="card"><h2>Claude API</h2>
+          <div class="row"><div class="field" style="flex:3 1 280px"><label>API 키 (console.anthropic.com → API Keys)</label><input name="apiKey" value="${esc(s.apiKey)}" placeholder="sk-ant-..." autocomplete="off"></div>
+          <div class="field" style="flex:0 0 auto;align-self:flex-end"><button type="button" class="btn" id="test-key">연결 확인</button></div></div>
+          <div class="row">${sel('모델', 'model', s.model, META.models)}${sel('응대 · 영업 생각 깊이', 'agentEffort', s.agentEffort, efforts)}${sel('디자인 생각 깊이', 'designEffort', s.designEffort, efforts)}</div>
+          <div class="row">${f('하루 API 예산 (USD, 넘으면 자동 정지)', 'dailyBudgetUsd', s.dailyBudgetUsd, 'type="number" min="0" step="1"')}<div class="field"><label>&nbsp;</label><label class="switch"><input type="checkbox" name="design.selfReview" ${s.design.selfReview ? 'checked' : ''}> 시안마다 아트디렉터 자체 검토 (품질↑, 비용↑)</label></div></div>
+          <small class="muted">키는 이 컴퓨터의 data/db.json 에만 저장됩니다(저장소에 올라가지 않음). 거절된 요청은 Anthropic의 대체 모델이 자동으로 이어받습니다.</small>
+        </div>
+
+        <div class="card"><h2>프로필 — 에이전트가 '나'로서 일할 때 쓰는 정보</h2>
+          <div class="row">${f('이름', 'profile.ownerName', s.profile.ownerName)}${f('스튜디오 이름', 'profile.studioName', s.profile.studioName)}${f('직함', 'profile.title', s.profile.title)}</div>
+          <div class="row">${f('알림 받을 이메일', 'profile.ownerEmail', s.profile.ownerEmail, 'type="email"')}${f('작업 시간', 'profile.workingHours', s.profile.workingHours)}${f('사용 언어', 'profile.languages', s.profile.languages)}</div>
+          ${ta('소개', 'profile.bio', s.profile.bio, '경력, 강점, 작업 철학 — 사실만 적으세요. 에이전트는 여기 없는 경력을 지어내지 않습니다.')}
+          ${f('전문 분야', 'profile.specialties', s.profile.specialties)}
+          ${ta('포트폴리오 · 링크', 'profile.portfolio', s.profile.portfolio, '비핸스, 인스타그램, 홈페이지, 대표 작업 설명')}
+          ${ta('말투', 'profile.tone', s.profile.tone)}
+          ${f('서명 (선택)', 'profile.signature', s.profile.signature)}
+        </div>
+
+        <div class="card"><h2>서비스 · 가격표</h2>
+          <p class="muted">최저가 아래로는 견적이 나가지 않습니다(코드로 막혀 있음). 더 깎아 달라는 요청은 '확인 필요'로 올라옵니다.</p>
+          <div class="table-wrap"><table class="table services"><thead><tr><th>id</th><th>이름</th><th>설명</th><th>정가</th><th>최저가</th><th>기간(일)</th><th>수정</th><th></th></tr></thead>
+          <tbody id="svc">${s.services.map(svcRow).join('')}</tbody></table></div>
+          <button type="button" class="btn small" id="add-svc">서비스 추가</button>
+        </div>
+
+        <div class="card"><h2>정책</h2>
+          <div class="row">${f('통화', 'policy.currency', s.policy.currency)}${f('계약금 %', 'policy.depositPercent', s.policy.depositPercent, 'type="number"')}${f('급행 추가 %', 'policy.rushFeePercent', s.policy.rushFeePercent, 'type="number"')}${f('추가 수정 1회 가격', 'policy.extraRevisionPrice', s.policy.extraRevisionPrice, 'type="number"')}${f('1차 시안 개수', 'policy.conceptsPerRound', s.policy.conceptsPerRound, 'type="number" min="1" max="3"')}</div>
+          <label class="switch"><input type="checkbox" name="policy.requireDeposit" ${s.policy.requireDeposit ? 'checked' : ''}> 계약금 입금 확인 후에만 디자인 작업 시작</label>
+          <div class="row" style="margin-top:12px">${sel('AI 사용 알림', 'policy.aiDisclosure', s.policy.aiDisclosure, { on_ask: '고객이 물으면 솔직하게 답함 (기본)', always: '첫 메시지에서 먼저 밝힘' })}</div>
+          ${ta('입금 안내 (청구서에 자동 첨부)', 'policy.paymentInfo', s.policy.paymentInfo, '예: 국민은행 000-00-0000 홍길동 / 세금계산서 발행 가능')}
+          ${ta('에이전트에게 주는 추가 지침', 'policy.extraInstructions', s.policy.extraInstructions, '예: 주말 문의는 월요일 오전에 답한다고 안내 / 경쟁사 비방 금지 / 수정은 영업일 2일 안에')}
+        </div>
+
+        <div class="card"><h2>자율 수준</h2>
+          <p class="muted">'자동'은 에이전트가 바로 실행, '승인 후'는 승인 대기에 올라와 내가 확인하면 나갑니다.</p>
+          ${Object.entries(META.autonomy).map(([k, v]) => `<div class="item-row" style="padding:6px 0;border-bottom:1px solid var(--line)"><span>${v}</span>
+            <div class="seg" data-auto="${k}"><button type="button" data-v="auto" class="${s.autonomy[k] === 'auto' ? 'on' : ''}">자동</button><button type="button" data-v="approve" class="${s.autonomy[k] !== 'auto' ? 'on' : ''}">승인 후</button></div></div>`).join('')}
+        </div>
+
+        <div class="card"><h2>이메일 (선택)</h2>
+          <p class="muted">채우면 고객에게 새 메시지 알림과 포털 링크, 영업 메일이 이메일로 나갑니다. Gmail은 '앱 비밀번호'를 쓰세요 (smtp.gmail.com / 465 / SSL).</p>
+          <div class="row">${f('SMTP 서버', 'smtp.host', s.smtp.host, 'placeholder="smtp.gmail.com"')}${f('포트', 'smtp.port', s.smtp.port, 'type="number"')}<div class="field"><label>&nbsp;</label><label class="switch"><input type="checkbox" name="smtp.secure" ${s.smtp.secure ? 'checked' : ''}> SSL (465)</label></div></div>
+          <div class="row">${f('아이디', 'smtp.user', s.smtp.user, 'autocomplete="off"')}${f('비밀번호', 'smtp.pass', s.smtp.pass, 'type="password" autocomplete="new-password"')}${f('보내는 사람', 'smtp.from', s.smtp.from, 'placeholder="스튜디오 이름 <me@example.com>"')}</div>
+        </div>
+
+        <div class="card"><h2>연결</h2>
+          ${f('공개 주소 (고객에게 보내는 링크의 앞부분)', 'publicUrl', s.publicUrl)}
+          <p class="muted">다른 채널(메일 전달, 카카오 채널 챗봇, Zapier/Make 등)에서 받은 메시지를 아래처럼 보내면 에이전트가 응대합니다.</p>
+          <pre class="card mono pre" style="background:var(--surface-2)">curl -X POST ${esc(s.publicUrl)}/api/inbound \\
+  -H "Content-Type: application/json" \\
+  -H "x-inbound-token: ${esc(s.inboundToken)}" \\
+  -d '{"email":"client@example.com","name":"고객","text":"로고 문의드립니다"}'</pre>
+        </div>
+      </form>
+
+      <form class="card stack" id="pwf" style="margin-top:12px"><h2>대시보드 비밀번호 변경</h2>
+        <div class="row"><div><label>현재 비밀번호</label><input type="password" name="current" autocomplete="current-password"></div><div><label>새 비밀번호</label><input type="password" name="next" autocomplete="new-password"></div></div>
+        <div><button class="btn">변경</button></div></form>`;
+
+    const autonomy = { ...s.autonomy };
+    $$('[data-auto]').forEach((seg) => seg.querySelectorAll('button').forEach((b) => (b.onclick = () => {
+      autonomy[seg.dataset.auto] = b.dataset.v;
+      seg.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    })));
+    $('#add-svc').onclick = () => $('#svc').insertAdjacentHTML('beforeend', svcRow({ id: '', name: '', description: '', basePrice: 0, minPrice: 0, days: 5, revisions: 2 }));
+    $('#svc').onclick = (e) => { if (e.target.dataset.del !== undefined) e.target.closest('tr').remove(); };
+    $('#test-key').onclick = async () => {
+      const r = await api('/api/settings/test-key', { method: 'POST', body: { apiKey: $('[name="apiKey"]').value } });
+      toast(r.ok ? `연결 성공 — ${r.model}` : `연결 실패: ${r.error}`);
+    };
+    $('#save').onclick = async () => {
+      const body = { autonomy };
+      for (const el of $$('#sf [name]')) {
+        const path = el.name.split('.');
+        let v = el.type === 'checkbox' ? el.checked : el.type === 'number' ? Number(el.value) : el.value;
+        let o = body;
+        while (path.length > 1) { const k = path.shift(); o = o[k] ??= {}; }
+        o[path[0]] = v;
+      }
+      body.services = $$('#svc tr').map((tr) => Object.fromEntries($$('input', tr).map((i) => [i.dataset.k, i.type === 'number' ? Number(i.value) : i.value]))).filter((x) => x.name);
+      try {
+        await api('/api/settings', { method: 'PUT', body });
+        toast('저장했습니다');
+        await refreshOverview();
+        route();
+      } catch (err) { toast(err.message); }
+    };
+    $('#pwf').onsubmit = async (e) => {
+      e.preventDefault();
+      try { await api('/api/settings/password', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); toast('비밀번호를 바꿨습니다'); e.target.reset(); } catch (err) { toast(err.message); }
+    };
+  }
+
+  function svcRow(x) {
+    const c = (k, v, t = 'text', w = '') => `<td><input data-k="${k}" type="${t}" value="${esc(v)}" ${w}></td>`;
+    return `<tr>${c('id', x.id, 'text', 'style="width:80px"')}${c('name', x.name)}${c('description', x.description)}${c('basePrice', x.basePrice, 'number', 'style="width:110px"')}${c('minPrice', x.minPrice, 'number', 'style="width:110px"')}${c('days', x.days, 'number', 'style="width:70px"')}${c('revisions', x.revisions, 'number', 'style="width:60px"')}<td><button type="button" class="btn small danger" data-del>삭제</button></td></tr>`;
+  }
+
+  boot();
+})();

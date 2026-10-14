@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>프로젝트</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Ccircle cx=%2216%22 cy=%2216%22 r=%2214%22 fill=%22%233b5bdb%22/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/assets/app.css">
+<style>
+  .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .designs { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+  .doc table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  .doc td { padding: 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .doc td:last-child { text-align: right; white-space: nowrap; }
+  .composer { position: sticky; bottom: 0; background: var(--bg); padding: 12px 0 4px; }
+  .composer .row { align-items: flex-end; }
+  .composer textarea { min-height: 52px; }
+  .tabs { display: flex; gap: 6px; margin: 16px 0 10px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <div class="head">
+    <div>
+      <small id="studio"></small>
+      <h1 id="title">불러오는 중…</h1>
+    </div>
+    <span class="badge accent" id="status"></span>
+  </div>
+
+  <section id="docs" class="stack"></section>
+
+  <section id="designs-wrap" class="hidden">
+    <h2 style="margin-top:24px">시안</h2>
+    <div class="designs" id="designs"></div>
+  </section>
+
+  <h2 style="margin-top:24px">대화</h2>
+  <div class="thread" id="thread"></div>
+
+  <form class="composer" id="composer">
+    <div class="row">
+      <div style="flex:5 1 260px"><textarea id="text" placeholder="메시지를 입력하세요" aria-label="메시지"></textarea></div>
+      <div style="flex:0 0 auto" class="stack">
+        <label class="btn small" style="margin:0">이미지 첨부<input type="file" id="images" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden></label>
+        <button class="btn primary" type="submit" id="send">보내기</button>
+      </div>
+    </div>
+    <small id="files"></small>
+  </form>
+</main>
+<script src="/assets/common.js"></script>
+<script src="/assets/portal.js"></script>
+</body>
+</html>

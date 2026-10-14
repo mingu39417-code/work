@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>디자인 문의</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Ccircle cx=%2216%22 cy=%2216%22 r=%2214%22 fill=%22%233b5bdb%22/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<main class="wrap">
+  <header style="margin-bottom:20px">
+    <h1 id="studio">디자인 문의</h1>
+    <p class="muted" id="bio"></p>
+  </header>
+
+  <form id="form" class="card" novalidate>
+    <div class="row">
+      <div class="field"><label for="name">이름 *</label><input id="name" name="name" required autocomplete="name"></div>
+      <div class="field"><label for="email">이메일 *</label><input id="email" name="email" type="email" required autocomplete="email"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label for="company">회사 · 브랜드</label><input id="company" name="company" autocomplete="organization"></div>
+      <div class="field"><label for="serviceId">원하는 작업</label><select id="serviceId" name="serviceId"><option value="">선택 안 함 / 잘 모르겠어요</option></select></div>
+    </div>
+    <div class="row">
+      <div class="field"><label for="budget">예산</label><input id="budget" name="budget" placeholder="예: 50만 원 안팎"></div>
+      <div class="field"><label for="deadline">희망 일정</label><input id="deadline" name="deadline" placeholder="예: 11월 말까지"></div>
+    </div>
+    <div class="field"><label for="description">요청 내용 *</label><textarea id="description" name="description" rows="6" required placeholder="어떤 디자인이 필요한지, 어디에 쓰는지, 참고하고 싶은 느낌 등을 자유롭게 적어 주세요."></textarea></div>
+    <div class="field"><label for="images">참고 이미지 (선택, 최대 4장 · 장당 5MB)</label><input id="images" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple></div>
+    <input name="website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px">
+    <p class="error-text" id="err" role="alert"></p>
+    <button class="btn primary" type="submit" id="submit">문의 보내기</button>
+  </form>
+
+  <section id="done" class="card hidden">
+    <h2>문의가 접수되었습니다</h2>
+    <p>곧 답변을 드립니다. 아래 링크에서 대화 · 견적 · 시안을 확인할 수 있으니 꼭 저장해 두세요.</p>
+    <p><a id="portal" class="btn primary" href="#">내 프로젝트 페이지 열기</a></p>
+  </section>
+</main>
+<script src="/assets/common.js"></script>
+<script src="/assets/inquiry.js"></script>
+</body>
+</html>

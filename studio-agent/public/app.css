@@ -1,0 +1,121 @@
+:root {
+  --bg: #f6f5f2;
+  --surface: #ffffff;
+  --surface-2: #f0eee9;
+  --text: #1b1a17;
+  --muted: #6b6860;
+  --line: #e2dfd8;
+  --accent: #3b5bdb;
+  --accent-ink: #ffffff;
+  --ok: #2f9e44;
+  --warn: #e67700;
+  --bad: #e03131;
+  --radius: 12px;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 4px 16px rgb(0 0 0 / 0.04);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #131312;
+    --surface: #1c1c1a;
+    --surface-2: #252522;
+    --text: #ecebe6;
+    --muted: #9c998f;
+    --line: #33322e;
+    --accent: #7b93ff;
+    --accent-ink: #0d0d0c;
+    --shadow: none;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 Pretendard, "Apple SD Gothic Neo", "Noto Sans KR", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+a { color: var(--accent); }
+h1, h2, h3 { line-height: 1.25; margin: 0 0 0.5em; }
+h1 { font-size: 1.6rem; }
+h2 { font-size: 1.2rem; }
+h3 { font-size: 1rem; }
+p { margin: 0 0 0.75em; }
+small, .muted { color: var(--muted); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; }
+
+input, select, textarea, button { font: inherit; color: inherit; }
+input, select, textarea {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+textarea { resize: vertical; min-height: 80px; }
+input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+label { display: block; font-size: 0.85rem; color: var(--muted); margin: 0 0 4px; }
+.field { margin-bottom: 12px; }
+.row { display: flex; gap: 12px; flex-wrap: wrap; }
+.row > * { flex: 1 1 180px; min-width: 0; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--surface); cursor: pointer; text-decoration: none; color: var(--text);
+  white-space: nowrap;
+}
+.btn:hover { background: var(--surface-2); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.danger { color: var(--bad); }
+.btn.small { padding: 4px 10px; font-size: 0.85rem; }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px;
+  box-shadow: var(--shadow);
+}
+.stack > * + * { margin-top: 12px; }
+.badge {
+  display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 0.78rem;
+  background: var(--surface-2); color: var(--muted); border: 1px solid var(--line); white-space: nowrap;
+}
+.badge.ok { color: var(--ok); border-color: currentColor; background: transparent; }
+.badge.warn { color: var(--warn); border-color: currentColor; background: transparent; }
+.badge.bad { color: var(--bad); border-color: currentColor; background: transparent; }
+.badge.accent { color: var(--accent); border-color: currentColor; background: transparent; }
+.empty { padding: 28px; text-align: center; color: var(--muted); }
+.error-text { color: var(--bad); font-size: 0.9rem; }
+
+/* 시안 미리보기 — 샌드박스 iframe */
+.design-frame {
+  width: 100%; aspect-ratio: 4 / 3; border: 1px solid var(--line); border-radius: 8px;
+  background: repeating-conic-gradient(var(--surface-2) 0% 25%, var(--surface) 0% 50%) 50% / 20px 20px;
+}
+
+/* 대화 */
+.thread { display: flex; flex-direction: column; gap: 10px; }
+.bubble { max-width: min(560px, 88%); padding: 10px 13px; border-radius: 14px; white-space: pre-wrap; word-break: break-word; }
+.bubble .meta { display: block; font-size: 0.75rem; color: var(--muted); margin-bottom: 3px; }
+.bubble.me { align-self: flex-end; background: var(--accent); color: var(--accent-ink); }
+.bubble.me .meta { color: inherit; opacity: 0.75; }
+.bubble.them { align-self: flex-start; background: var(--surface); border: 1px solid var(--line); }
+.bubble.system { align-self: center; background: transparent; color: var(--muted); font-size: 0.85rem; text-align: center; }
+.bubble.internal { align-self: stretch; max-width: none; background: transparent; border: 1px dashed var(--line); color: var(--muted); font-size: 0.88rem; }
+.bubble img.attach { max-width: 180px; max-height: 140px; border-radius: 8px; display: block; margin-top: 6px; }
+
+.wrap { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+.hidden { display: none !important; }
+.toast {
+  position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
+  background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; z-index: 100; max-width: calc(100% - 32px);
+}
+@media (max-width: 600px) {
+  .composer { position: static; }
+}
