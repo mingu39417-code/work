@@ -17,7 +17,7 @@ import {
   executeAction, acceptQuoteByClient, approveDesignByClient, markInvoicePaid, canDownload,
   studioName, portalUrl, short, aiNotice, OUTREACH_BASIS, outreachBlocked, contractOf, signContractByClient,
 } from './lib/actions.mjs';
-import { mailAccount, mailer, GMAIL, accountAuth } from './lib/mailer.mjs';
+import { mailAccount, mailer, GMAIL, accountAuth, normalizeAppPassword, checkAppPassword, explainMailError, imapClient } from './lib/mailer.mjs';
 import { startInboxPoller } from './lib/inbox.mjs';
 import { ROLES, DEPARTMENTS, POSITIONS, ASSIGNED, deptOf, defaultPosition, busyStaff, staffLabel, loadOf, capacityOf, managerOf } from './lib/staff.mjs';
 import { packageZip, safeName } from './lib/finals.mjs';
@@ -717,8 +717,9 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       if (b.kind !== 'gmail') throw new HttpError(400, '지금은 Gmail 계정만 등록할 수 있습니다');
       const address = String(b.address ?? '').trim().toLowerCase();
       if (!/^[^@\s]+@(gmail\.com|googlemail\.com|[^@\s]+\.[^@\s]+)$/.test(address)) throw new HttpError(400, '이메일 주소를 확인하세요');
-      const pw = String(b.password ?? '').replace(/\s+/g, '');
-      if (pw.length < 8) throw new HttpError(400, 'Gmail 앱 비밀번호(16자리)를 입력하세요');
+      const pw = normalizeAppPassword(b.password);
+      const bad = checkAppPassword(pw);
+      if (bad) throw new HttpError(400, bad);
       if (store.findOne('accounts', (a) => a.address === address)) throw new HttpError(409, '이미 등록된 계정입니다');
       const acct = store.insert('accounts', { kind: 'gmail', role: 'delivery', label: String(b.label ?? '납품 · 응대용 Gmail'), address, secret: store.vault.encrypt(pw), enabled: true, inbox: b.inbox !== false, status: 'unverified', lastError: '' });
       store.log('settings', `계정 등록: ${address}`);
@@ -733,18 +734,25 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
         const patch = {};
         for (const k of ['enabled', 'inbox']) if (typeof b[k] === 'boolean') patch[k] = b[k];
         if (typeof b.label === 'string') patch.label = b.label;
-        if (b.password) { patch.secret = store.vault.encrypt(String(b.password).replace(/\s+/g, '')); patch.status = 'unverified'; }
+        if (b.password) {
+          const bad = checkAppPassword(b.password);
+          if (bad) throw new HttpError(400, bad);
+          patch.secret = store.vault.encrypt(normalizeAppPassword(b.password));
+          patch.status = 'unverified';
+          patch.lastError = '';
+          patch.authFailed = false;
+        }
         store.update('accounts', acct.id, patch);
         return send(res, 200, publicAccount(store.get('accounts', acct.id)));
       }
       if (m === 'POST' && g[2]) {
         const errors = [];
-        try { await mailer.verify(store, acct); } catch (err) { errors.push(`보내기(SMTP): ${err.message}`); }
+        try { await mailer.verify(store, acct); } catch (err) { errors.push(`보내기(SMTP): ${explainMailError(err)}`); }
         if (acct.inbox !== false) {
-          const c = new ImapFlow({ ...GMAIL.imap, auth: accountAuth(store, acct), logger: false });
-          try { await c.connect(); await c.logout(); } catch (err) { errors.push(`받기(IMAP): ${err.message}`); }
+          const c = imapClient(store, acct, ImapFlow);
+          try { await c.connect(); await c.logout(); } catch (err) { errors.push(`받기(IMAP): ${explainMailError(err)}`); }
         }
-        store.update('accounts', acct.id, { status: errors.length ? 'error' : 'ok', lastError: errors.join(' / '), lastCheckAt: new Date().toISOString() });
+        store.update('accounts', acct.id, { status: errors.length ? 'error' : 'ok', lastError: errors.join(' / '), lastCheckAt: new Date().toISOString(), ...(errors.length ? {} : { authFailed: false }) });
         return send(res, 200, { ok: !errors.length, error: errors.join(' / ') });
       }
     }

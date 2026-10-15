@@ -552,9 +552,11 @@
       card.querySelector('[data-act="pw"]').onclick = async () => {
         const pw = card.querySelector('[data-pw]').value;
         if (!pw) return toast('새 앱 비밀번호를 입력하세요');
-        await api(`/api/accounts/${id}`, { method: 'PATCH', body: { password: pw } });
-        toast('바꿨습니다. 연결 확인을 눌러 주세요');
-        route();
+        try {
+          await api(`/api/accounts/${id}`, { method: 'PATCH', body: { password: pw } });
+          toast('바꿨습니다. 연결 확인을 눌러 주세요');
+          route();
+        } catch (err) { toast(err.message); }
       };
       card.querySelector('[data-act="del"]').onclick = async () => {
         if (!confirm('이 계정을 삭제할까요? 메일 자동 처리가 멈춥니다.')) return;

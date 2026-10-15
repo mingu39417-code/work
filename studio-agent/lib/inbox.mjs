@@ -9,7 +9,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
-import { GMAIL, mailAccount, accountAuth } from './mailer.mjs';
+import { GMAIL, mailAccount, accountAuth, isAuthError, explainMailError, imapClient } from './mailer.mjs';
 import { ACTIVE_STATUSES, createInquiry, enqueueAgent, postMessage, short } from './actions.mjs';
 
 const IMAGE_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
@@ -107,7 +107,7 @@ export async function pollInbox(ctx) {
   const { store } = ctx;
   const acct = mailAccount(store);
   if (!acct || acct.inbox === false) return 0;
-  const client = new ImapFlow({ ...GMAIL.imap, auth: accountAuth(store, acct), logger: false });
+  const client = imapClient(store, acct, ImapFlow);
   let count = 0;
   await client.connect();
   try {
@@ -139,7 +139,8 @@ export function startInboxPoller(ctx, { intervalMs = 120e3 } = {}) {
   let busy = false;
   const tick = async () => {
     const acct = mailAccount(store);
-    if (busy || store.settings.paused || !acct || acct.inbox === false) return;
+    // Google이 로그인을 거부했다면 대표가 앱 비밀번호를 바꿀 때까지 다시 시도하지 않습니다(반복 실패 시 Google이 계정을 잠글 수 있음).
+    if (busy || store.settings.paused || !acct || acct.inbox === false || acct.authFailed) return;
     busy = true;
     try {
       const n = await pollInbox(ctx);
@@ -147,8 +148,9 @@ export function startInboxPoller(ctx, { intervalMs = 120e3 } = {}) {
       store.update('accounts', acct.id, { lastCheckAt: new Date().toISOString() });
       if (n) store.log('mail', `새 메일 ${n}통 처리`);
     } catch (err) {
-      if (acct.status !== 'error') store.alert('urgent', `Gmail 받은편지함 확인 실패: ${err.message} — 계정 화면에서 앱 비밀번호를 확인하세요`);
-      store.update('accounts', acct.id, { status: 'error', lastError: err.message });
+      const auth = isAuthError(err);
+      if (acct.status !== 'error') store.alert('urgent', `Gmail 받은편지함 확인 실패${auth ? ' — 자동 확인을 멈췄습니다' : ''}: ${explainMailError(err)}`);
+      store.update('accounts', acct.id, { status: 'error', lastError: explainMailError(err), authFailed: auth });
     } finally {
       busy = false;
     }

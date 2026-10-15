@@ -193,6 +193,14 @@ test('계정 비밀번호는 암호화되어 저장되고 화면에 다시 나�
   assert.ok(!db.includes('abcd efgh') && !db.includes('abcdefgh'), 'db.json에 평문 없음');
   assert.equal(app.ctx.store.vault.decrypt(app.ctx.store.all('accounts')[0].secret), 'abcdefghijklmnop');
   assert.equal((await api('/api/accounts', 'POST', { kind: 'instagram', address: 'x', password: 'yyyyyyyy' })).status, 400);
+  // Google 계정 비밀번호처럼 보이는 값은 등록 단계에서 거절하고 앱 비밀번호 안내를 보여 줍니다
+  const wrong = await api('/api/accounts', 'POST', { kind: 'gmail', address: 'other@gmail.com', password: 'MyGoogle!Pass123' });
+  assert.equal(wrong.status, 400);
+  assert.match((await wrong.json()).error, /앱 비밀번호/);
+  const id = app.ctx.store.all('accounts')[0].id;
+  assert.equal((await api(`/api/accounts/${id}`, 'PATCH', { password: 'not-an-app-password' })).status, 400);
+  assert.equal((await api(`/api/accounts/${id}`, 'PATCH', { password: 'WXYZ wxyz WXYZ wxyz' })).status, 200);
+  assert.equal(app.ctx.store.vault.decrypt(app.ctx.store.get('accounts', id).secret), 'wxyzwxyzwxyzwxyz');
 
   // 수신거부 링크
   const l = app.ctx.store.insert('leads', { email: 'a@b.kr', unsubToken: 'zzz', basis: 'consent', basisNote: '서면 동의 받음', optOut: false });
@@ -250,4 +258,28 @@ test('연습: 메일 없이 실제처럼 진행되고, 코칭 피드백은 학�
   await api(`/api/projects/${p.id}/instruct`, 'POST', { text: '다시' });
   await run();
   assert.doesNotMatch(prompts.at(-1), /용도부터 물어볼 것/);
+});
+
+test('Gmail 로그인 거부를 알아보고 한국어로 안내합니다(이때 받은편지함 자동 확인은 멈춤)', async () => {
+  const { isAuthError, explainMailError, checkAppPassword } = await import('../lib/mailer.mjs');
+  const smtp = new Error('Invalid login: 535-5.7.8 Username and Password not accepted.');
+  const imap = Object.assign(new Error('Command failed'), { authenticationFailed: true });
+  assert.ok(isAuthError(smtp) && isAuthError(imap));
+  assert.ok(!isAuthError(new Error('getaddrinfo ENOTFOUND imap.gmail.com')));
+  assert.match(explainMailError(imap), /앱 비밀번호/);
+  assert.match(explainMailError(new Error('getaddrinfo ENOTFOUND imap.gmail.com')), /인터넷 연결/);
+  assert.equal(checkAppPassword('abcd efgh ijkl mnop'), null);
+  assert.match(checkAppPassword('MyGoogle!Pass123'), /앱 비밀번호/);
+});
+
+test('Gmail 연결이 시간 초과돼도 프로그램이 꺼지지 않습니다', async () => {
+  const { imapClient } = await import('../lib/mailer.mjs');
+  const { ImapFlow } = await import('imapflow');
+  const { ctx } = makeCtx(() => msg([text('x')]));
+  const { store } = ctx;
+  addGmail(store);
+  const c = imapClient(store, store.all('accounts')[0], ImapFlow);
+  // 예전에는 이 'error' 이벤트를 받는 곳이 없어 Node가 프로세스를 종료했습니다
+  assert.doesNotThrow(() => c.emit('error', Object.assign(new Error('Socket timeout'), { code: 'ETIMEOUT' })));
+  assert.ok(store.all('activity').some((a) => /Socket timeout/.test(a.text)));
 });
