@@ -22,6 +22,7 @@ import { startInboxPoller } from './lib/inbox.mjs';
 import { ROLES, DEPARTMENTS, POSITIONS, ASSIGNED, deptOf, defaultPosition, busyStaff, staffLabel, loadOf, capacityOf, managerOf } from './lib/staff.mjs';
 import { packageZip, safeName } from './lib/finals.mjs';
 import { PLATFORMS, connectAccount, designJpeg, isPublicUrl, mediaUrl, canPostProject } from './lib/social.mjs';
+import { blogImagePng, blockHtml, writeUrl, ARM_MINUTES } from './lib/blog.mjs';
 import { financeSummary } from './lib/pm.mjs';
 import { DEFAULT_CONTRACT } from './lib/contract.mjs';
 import { ImapFlow } from 'imapflow';
@@ -290,7 +291,8 @@ function staffProfile(b, services) {
 // 직원별 성과 · 비용 (이번 달)
 function staffView(store, running) {
   const month = new Date().toISOString().slice(0, 7);
-  const busy = busyStaff(store, running);
+  // 두 작업 줄(디자인 · 사무)에서 동시에 일하는 직원을 모두 표시합니다.
+  const busy = Object.assign({}, ...[].concat(running ?? []).map((j) => busyStaff(store, j)));
   return store.all('staff').map((st) => {
     const usage = store.find('usage', (u) => u.staffId === st.id);
     const made = store.find('designs', (d) => d.designerId === st.id);
@@ -375,6 +377,43 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
     // ── 공개 API ──
     if (m === 'GET' && p === '/api/public/studio') return send(res, 200, publicSettings(store.settings));
     if (m === 'GET' && p === '/privacy') return send(res, 200, privacyPage(store.settings), { 'Content-Type': 'text/html; charset=utf-8' });
+    if (p.startsWith('/helper/blog/')) {
+      const origin = String(req.headers.origin ?? '');
+      if (origin && !origin.startsWith('chrome-extension://')) throw new HttpError(403, '허용되지 않은 요청');
+      const helperPost = (post) => ({
+        id: post.id, title: post.title, tags: post.tags,
+        blocks: post.blocks.map((b) => ({ type: b.type, html: blockHtml(b), text: b.text ?? '' })),
+        imageCount: post.blocks.filter((b) => b.type === 'img').length,
+        textLength: post.blocks.filter((b) => b.type !== 'img').reduce((t, b) => t + String(b.text).length, 0),
+        plain: [post.title, ...post.blocks.filter((b) => b.type !== 'img').map((b) => b.text), post.tags.map((x) => `#${x}`).join(' ')].join('\n\n'),
+      });
+      if (m === 'GET' && p === '/helper/blog/pending') {
+        const pend = store.settings.blog?.pending;
+        const post = pend && Date.parse(pend.until) > Date.now() ? store.get('blog_posts', pend.postId) : null;
+        return send(res, 200, { post: post && post.status !== 'published' ? helperPost(post) : null });
+      }
+      if (m === 'GET' && p === '/helper/blog/next') {
+        const post = store.find('blog_posts', (x) => x.status === 'ready')[0];
+        return send(res, 200, { post: post ? helperPost(post) : null });
+      }
+      if (m === 'GET' && (g = /^\/helper\/blog\/(\w+)\/images\/(\d+)\.png$/.exec(p))) {
+        const post = store.get('blog_posts', g[1]);
+        const png = post && blogImagePng(store, post, Number(g[2]));
+        if (!png) throw new HttpError(404, '없음');
+        return send(res, 200, png, { 'Content-Type': 'image/png' });
+      }
+      if (m === 'POST' && (g = /^\/helper\/blog\/(\w+)\/filled$/.exec(p))) {
+        const post = store.get('blog_posts', g[1]);
+        if (!post) throw new HttpError(404, '없음');
+        const b = await readJson(req);
+        const report = Array.isArray(b.report) ? b.report.map(String).slice(0, 40) : [];
+        store.update('blog_posts', post.id, { status: post.status === 'published' ? 'published' : 'filled', filledAt: new Date().toISOString(), fillOk: b.ok === true, fillReport: report });
+        store.updateSettings({ blog: { pending: null } });
+        store.log('blog', `네이버 글쓰기 창에 채움${b.ok === true ? '' : '(일부 실패 — 복사 · 붙여넣기로 안내)'}: ${post.title}`);
+        return send(res, 200, { ok: true });
+      }
+      throw new HttpError(404, '없음');
+    }
     if (m === 'GET' && (g = /^\/m\/([\w-]{20,})\.jpg$/.exec(p))) {
       const post = store.findOne('social_posts', (x) => x.mediaToken === g[1] && ['pending', 'queued', 'published', 'partial', 'failed'].includes(x.status));
       const d = post?.designId && store.get('designs', post.designId);
@@ -530,7 +569,7 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       req.on('close', () => sseClients.delete(res));
       return;
     }
-    if (m === 'GET' && p === '/api/meta') return send(res, 200, { statuses: STATUSES, autonomy: AUTONOMY_LABELS, models: Object.fromEntries(Object.entries(MODELS).map(([k, v]) => [k, v.label])), outreachBasis: OUTREACH_BASIS, departments: DEPARTMENTS, positions: POSITIONS, roles: ROLES });
+    if (m === 'GET' && p === '/api/meta') return send(res, 200, { statuses: STATUSES, autonomy: AUTONOMY_LABELS, models: Object.fromEntries(Object.entries(MODELS).map(([k, v]) => [k, v.label])), outreachBasis: OUTREACH_BASIS, departments: DEPARTMENTS, positions: POSITIONS, roles: ROLES, features: { social: Boolean(store.settings.social?.enabled), blog: store.settings.blog?.enabled !== false } });
     if (m === 'GET' && p === '/api/overview') return send(res, 200, overview(ctx));
 
     if (m === 'POST' && p === '/api/agent/pause') { store.updateSettings({ paused: true }); store.log('agent', '대표가 에이전트를 일시정지했습니다'); return send(res, 200, { ok: true }); }
@@ -723,6 +762,63 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
     const publicAccount = ({ secret, ...a }) => ({ ...a, hasSecret: Boolean(secret) });
     if (m === 'GET' && p === '/api/accounts') return send(res, 200, store.all('accounts').map(publicAccount));
 
+    // 네이버 블로그
+    if (m === 'GET' && p === '/api/blog') {
+      return send(res, 200, {
+        settings: store.settings.blog,
+        posts: store.all('blog_posts').slice().reverse().slice(0, 60).map((x) => ({ ...x, project: x.projectId ? store.get('projects', x.projectId)?.title ?? null : null, writer: x.writerId ? store.get('staff', x.writerId)?.name ?? null : null })),
+        extensionDir: path.join(here, 'naver-helper'),
+        composing: Boolean(store.findOne('jobs', (j) => j.kind === 'blog_compose' && ['queued', 'running'].includes(j.status))),
+        eligible: store.find('projects', (x) => !canPostProject(store, x) && !store.findOne('blog_posts', (y) => y.projectId === x.id && y.status !== 'archived')).map((x) => ({ id: x.id, title: x.title })),
+      });
+    }
+    if (m === 'PUT' && p === '/api/blog/settings') {
+      const b = await readJson(req);
+      const patch = {};
+      if (typeof b.blogId === 'string') {
+        const id = b.blogId.trim().replace(/^https?:\/\/(m\.)?blog\.naver\.com\//, '').split(/[/?#]/)[0];
+        if (id && !/^[a-zA-Z0-9_-]{2,40}$/.test(id)) throw new HttpError(400, '블로그 아이디는 blog.naver.com/ 뒤의 영문 · 숫자입니다');
+        patch.blogId = id;
+      }
+      if (Number.isFinite(b.keepReady)) patch.keepReady = Math.min(10, Math.max(1, Math.round(b.keepReady)));
+      if (typeof b.enabled === 'boolean') patch.enabled = b.enabled;
+      store.updateSettings({ blog: patch });
+      return send(res, 200, store.settings.blog);
+    }
+    if (m === 'POST' && p === '/api/blog/compose') {
+      const b = await readJson(req);
+      if (b.projectId) { const why = canPostProject(store, store.get('projects', b.projectId)); if (why) throw new HttpError(409, why); }
+      enqueue(store, 'blog_compose', b.projectId ? { projectId: b.projectId } : { topic: String(b.topic ?? '').slice(0, 600) });
+      return send(res, 200, { ok: true });
+    }
+    if ((g = /^\/api\/blog\/(\w+)(\/arm)?$/.exec(p))) {
+      const post = store.get('blog_posts', g[1]);
+      if (!post) throw new HttpError(404, '없음');
+      if (m === 'POST' && g[2]) {
+        const blogId = store.settings.blog?.blogId;
+        if (!blogId) throw new HttpError(409, '먼저 내 네이버 블로그 아이디를 저장하세요');
+        if (post.status === 'published') throw new HttpError(409, '이미 발행된 글입니다');
+        store.updateSettings({ blog: { pending: { postId: post.id, until: new Date(Date.now() + ARM_MINUTES * 60e3).toISOString() } } });
+        return send(res, 200, { url: writeUrl(blogId) });
+      }
+      if (m === 'PATCH' && !g[2]) {
+        const b = await readJson(req);
+        const patch = {};
+        if (typeof b.title === 'string' && b.title.trim()) patch.title = b.title.trim().slice(0, 60);
+        if (Array.isArray(b.tags)) patch.tags = b.tags.map((x) => String(x).replace(/[^\p{L}\p{N}_]/gu, '')).filter(Boolean).slice(0, 20);
+        if (['ready', 'archived', 'published'].includes(b.status)) patch.status = b.status;
+        if (typeof b.publishedUrl === 'string') patch.publishedUrl = b.publishedUrl.slice(0, 300);
+        store.update('blog_posts', post.id, patch);
+        return send(res, 200, { ok: true });
+      }
+    }
+    if (m === 'GET' && (g = /^\/api\/blog\/(\w+)\/images\/(\d+)\.png$/.exec(p))) {
+      const post = store.get('blog_posts', g[1]);
+      const png = post && blogImagePng(store, post, Number(g[2]));
+      if (!png) throw new HttpError(404, '없음');
+      return send(res, 200, png, { 'Content-Type': 'image/png' });
+    }
+
     // SNS 영업(인스타그램 · Threads)
     if (m === 'GET' && p === '/api/social') {
       const s = store.settings;
@@ -866,7 +962,7 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
     }
 
     // 직원 (조직)
-    if (m === 'GET' && p === '/api/staff') return send(res, 200, staffView(store, ctx.running));
+    if (m === 'GET' && p === '/api/staff') return send(res, 200, staffView(store, Object.values(ctx.runningJobs ?? {})));
     if (m === 'POST' && p === '/api/staff') {
       const b = await readJson(req);
       if (!ROLES[b.role]) throw new HttpError(400, '직무를 선택하세요');

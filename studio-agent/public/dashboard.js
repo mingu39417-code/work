@@ -38,6 +38,9 @@
   async function start() {
     $('#app').classList.remove('hidden');
     META = await api('/api/meta');
+    // 꺼 둔 기능은 메뉴에서 숨깁니다(인스타그램 · Threads는 설정에서 다시 켤 수 있음)
+    $$('[data-nav="social"]').forEach((a) => (a.style.display = META.features?.social ? '' : 'none'));
+    $$('[data-nav="blog"]').forEach((a) => (a.style.display = META.features?.blog === false ? 'none' : ''));
     await refreshOverview();
     window.addEventListener('hashchange', route);
     route();
@@ -97,7 +100,7 @@
     $$('.side a').forEach((x) => x.classList.toggle('on', x.dataset.nav === ({ project: 'projects', practiceDetail: 'practice' }[view] ?? view)));
     const y = window.scrollY;
     try {
-      const fn = { overview, approvals, projects, project: () => projectView(b), sales, activity, settings, accounts, social, practice, practiceDetail: () => practiceDetail(b), org, reports, finance }[view];
+      const fn = { overview, approvals, projects, project: () => projectView(b), sales, activity, settings, accounts, social, blog, practice, practiceDetail: () => practiceDetail(b), org, reports, finance }[view];
       if (fn) await fn();
       else $('#view').innerHTML = '<div class="empty">없는 화면입니다</div>';
     } catch (err) {
@@ -511,6 +514,54 @@
       e.preventDefault();
       try { await api('/api/settings/password', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); toast('비밀번호를 바꿨습니다'); e.target.reset(); } catch (err) { toast(err.message); }
     };
+  }
+
+  // ── 네이버 블로그 ──
+  async function blog() {
+    const d = await api('/api/blog');
+    const s = d.settings ?? {};
+    const ST = { ready: ['accent', '발행 대기'], filled: ['warn', '글쓰기 창에 채움 · 발행 확인 중'], published: ['ok', '발행됨'], archived: ['', '보관'] };
+    const ready = d.posts.filter((x) => x.status === 'ready' || x.status === 'filled');
+    const preview = (x) => {
+      let n = 0;
+      return x.blocks.map((b) => b.type === 'img' ? `<img src="/api/blog/${x.id}/images/${n++}.png" style="max-width:100%;border-radius:8px;margin:6px 0">` : b.type === 'h' ? `<h4 style="margin:12px 0 4px">${esc(b.text)}</h4>` : `<p class="pre" style="margin:4px 0">${esc(b.text)}</p>`).join('') + `<p class="muted">${x.tags.map((t) => '#' + esc(t)).join(' ')}</p>`;
+    };
+    $('#view').innerHTML = `
+      <div class="page-head"><h1>네이버 블로그</h1><button class="btn small" id="bl-more">글 하나 더 쓰기</button></div>
+      <p class="muted">글은 카피라이터가 전부 씁니다(제목 · 본문 · 표지 이미지 · 태그). <b>발행하러 가기</b>를 누르면 네이버 글쓰기 창이 열리고 내용이 자동으로 채워집니다. 대표님은 네이버에서 <b>발행</b>만 누르세요. 발행하면 20분 안에 자동으로 '발행됨'으로 바뀝니다.</p>
+      <details class="card" style="margin-bottom:16px" ${s.blogId ? '' : 'open'}><summary><strong>처음 한 번만 설정 (5분)</strong></summary>
+        <ol style="line-height:1.8">
+          <li>내 블로그 아이디(blog.naver.com/ 뒤의 영문)를 넣고 저장: <input id="bl-id" value="${esc(s.blogId ?? '')}" placeholder="예: ongyeol_studio" style="max-width:220px"> <button class="btn small primary" id="bl-save">저장</button></li>
+          <li>크롬 주소창에 <code>chrome://extensions</code> 입력 → 오른쪽 위 <b>개발자 모드</b> 켜기 → <b>압축해제된 확장 프로그램을 로드합니다</b> → 이 폴더 선택:<br><code class="mono">${esc(d.extensionDir)}</code> <button class="btn small" id="bl-copy-dir">경로 복사</button></li>
+          <li>네이버에 로그인해 둡니다(비밀번호는 이 프로그램에 저장하지 않습니다).</li>
+          <li>블로그 관리 → 기본 설정 → 블로그 정보에서 <b>RSS 공개</b>(외부 보내기)가 켜져 있어야 발행 여부를 자동으로 확인할 수 있습니다.</li>
+        </ol></details>
+      <div class="card stack" style="margin-bottom:16px"><h2>발행 대기 ${ready.length}개 ${d.composing ? '<span class="badge warn">카피라이터가 쓰는 중</span>' : ''}</h2>
+        <p class="muted" style="margin:0">항상 ${s.keepReady ?? 3}개를 미리 써 둡니다 (<input id="bl-keep" type="number" min="1" max="10" value="${s.keepReady ?? 3}" style="width:60px;display:inline-block"> 개 <button class="btn small" id="bl-keep-save">바꾸기</button>). 고객이 동의한 작업은 사례 글로 먼저 씁니다.</p>
+        <div class="row" style="align-items:flex-end"><div><label>직접 주제 주기 (선택)</label><input id="bl-topic" placeholder="예: 카페 창업 전에 로고 준비하는 법"></div><div style="flex:0 0 auto"><button class="btn" id="bl-topic-go">이 주제로 쓰기</button></div></div>
+      </div>
+      <div class="stack">${d.posts.filter((x) => x.status !== 'archived').map((x) => `
+        <div class="card" data-post="${x.id}">
+          <div class="item-row"><h3>${esc(x.title)}</h3><span class="badge ${ST[x.status]?.[0] ?? ''}">${ST[x.status]?.[1] ?? esc(x.status)}</span></div>
+          <small class="muted">${x.kind === 'case' ? `사례 글 · ${esc(x.project ?? '')}` : `주제 글 · ${esc(x.topic)}`} · 작성 ${esc(x.writer ?? '')} · ${when(x.createdAt)}${x.fillReport?.length && !x.fillOk ? ' · <span class="error-text">자동 입력 일부 실패</span>' : ''}</small>
+          ${x.publishedUrl ? `<p><a href="${esc(x.publishedUrl)}" target="_blank" rel="noopener">발행된 글 보기</a></p>` : ''}
+          <details style="margin-top:6px"><summary>미리 보기</summary>${preview(x)}</details>
+          <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+            ${x.status !== 'published' ? `<button class="btn primary" data-arm="${x.id}">발행하러 가기</button>` : ''}
+            ${x.status === 'filled' ? `<button class="btn small" data-done="${x.id}">발행했어요</button>` : ''}
+            <button class="btn small" data-archive="${x.id}">보관</button>
+          </div>
+        </div>`).join('') || '<div class="card empty">아직 글이 없습니다. 블로그 아이디를 저장하면 카피라이터가 쓰기 시작합니다.</div>'}</div>`;
+    $('#bl-save').onclick = async () => { try { await api('/api/blog/settings', { method: 'PUT', body: { blogId: $('#bl-id').value } }); toast('저장했습니다. 곧 카피라이터가 글을 쓰기 시작합니다'); route(); } catch (err) { toast(err.message); } };
+    $('#bl-copy-dir').onclick = async () => { await navigator.clipboard.writeText(d.extensionDir); toast('경로를 복사했습니다'); };
+    $('#bl-keep-save').onclick = async () => { await api('/api/blog/settings', { method: 'PUT', body: { keepReady: Number($('#bl-keep').value) } }); toast('바꿨습니다'); route(); };
+    $('#bl-more').onclick = async () => { await api('/api/blog/compose', { method: 'POST', body: {} }); toast('카피라이터가 새 글을 씁니다(1~2분)'); route(); };
+    $('#bl-topic-go').onclick = async () => { const t = $('#bl-topic').value.trim(); if (!t) return toast('주제를 적어 주세요'); await api('/api/blog/compose', { method: 'POST', body: { topic: t } }); toast('그 주제로 씁니다(1~2분)'); route(); };
+    $$('[data-arm]').forEach((b) => (b.onclick = async () => {
+      try { const r = await api(`/api/blog/${b.dataset.arm}/arm`, { method: 'POST', body: {} }); window.open(r.url, '_blank', 'noopener'); toast('네이버 글쓰기 창에서 자동으로 채워집니다. 다 채워지면 발행을 누르세요'); } catch (err) { toast(err.message); }
+    }));
+    $$('[data-done]').forEach((b) => (b.onclick = async () => { const url = prompt('발행한 글 주소를 붙여 넣으면 함께 저장됩니다(비워도 됩니다)') ?? ''; await api(`/api/blog/${b.dataset.done}`, { method: 'PATCH', body: { status: 'published', publishedUrl: url } }); route(); }));
+    $$('[data-archive]').forEach((b) => (b.onclick = async () => { if (!confirm('이 글을 보관할까요? (발행 대기에서 빠집니다)')) return; await api(`/api/blog/${b.dataset.archive}`, { method: 'PATCH', body: { status: 'archived' } }); route(); }));
   }
 
   // ── SNS (인스타그램 · Threads) ──

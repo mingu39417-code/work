@@ -154,3 +154,20 @@ test('만들 수 없는 AI 파일을 약속하던 예전 기본 문구는 고치
   assert.equal(again.settings.services[1].description, '대표가 직접 쓴 설명');
   assert.ok(fs.existsSync(path.join(dir, 'db.json')));
 });
+
+test('디자인 작업이 돌아가는 동안에도 고객 응대 작업을 따로 꺼냅니다(작업 줄 분리)', async () => {
+  const { nextJob, laneOf } = await import('../lib/scheduler.mjs');
+  const { makeCtx: mk } = await import('./helpers.mjs');
+  const { ctx } = mk(() => msg([text('x')]));
+  const { store } = ctx;
+  const past = new Date(0).toISOString();
+  const design = store.insert('jobs', { kind: 'design', payload: {}, status: 'running', attempts: 1, runAt: past });
+  const agent = store.insert('jobs', { kind: 'agent', payload: { projectId: 'p' }, status: 'queued', attempts: 0, runAt: past });
+  const nextDesign = store.insert('jobs', { kind: 'design', payload: {}, status: 'queued', attempts: 0, runAt: past });
+  assert.equal(laneOf('design'), 'studio');
+  assert.equal(laneOf('final_files'), 'studio');
+  assert.equal(laneOf('agent'), 'office');
+  assert.equal(nextJob(store, Date.now(), 'office').id, agent.id, '디자인과 상관없이 고객 응대를 꺼냄');
+  assert.equal(nextJob(store, Date.now(), 'studio').id, nextDesign.id);
+  assert.ok(design);
+});

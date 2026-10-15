@@ -5,6 +5,7 @@ import { runAccountManager, runSales } from './agent.mjs';
 import { runDesignJob } from './designer.mjs';
 import { runFinalFiles } from './finals.mjs';
 import { composeSocialPost, publishSocialPost, syncSocial } from './social.mjs';
+import { composeBlogPost, checkPublished } from './blog.mjs';
 import { runKickoff, runStandup, runRetro, maintenance } from './pm.mjs';
 import { enqueueAgent } from './actions.mjs';
 import { BudgetError, MissingKeyError, RefusalError } from './claude.mjs';
@@ -18,16 +19,25 @@ const HANDLERS = {
   social_compose: (ctx, p) => composeSocialPost(ctx, p),
   social_publish: (ctx, p) => publishSocialPost(ctx, p),
   social_sync: (ctx) => syncSocial(ctx),
+  blog_compose: (ctx, p) => composeBlogPost(ctx, p),
+  blog_check: (ctx) => checkPublished(ctx),
   sales: (ctx, p) => runSales(ctx, p),
   kickoff: (ctx, p) => runKickoff(ctx, p),
   standup: (ctx) => runStandup(ctx),
   retro: (ctx, p) => runRetro(ctx, p),
 };
 
-export function nextJob(store, now = Date.now()) {
+// 작업 줄(레인): 오래 걸리는 디자인 작업이 고객 응대 · 일정 · 정산을 막지 않도록 두 줄로 나눠 동시에 돌립니다.
+// 실제 회사에서 디자이너가 시안을 만드는 동안 AM이 다른 고객에게 답하는 것과 같습니다.
+export const LANES = { studio: ['design', 'final_files'], office: null };
+export function laneOf(kind) {
+  return LANES.studio.includes(kind) ? 'studio' : 'office';
+}
+
+export function nextJob(store, now = Date.now(), lane = null) {
   return store
     .all('jobs')
-    .filter((j) => j.status === 'queued' && Date.parse(j.runAt) <= now)
+    .filter((j) => j.status === 'queued' && Date.parse(j.runAt) <= now && (!lane || laneOf(j.kind) === lane))
     .sort((a, b) => Date.parse(a.runAt) - Date.parse(b.runAt))[0] ?? null;
 }
 
@@ -65,27 +75,34 @@ export function startScheduler(ctx, { intervalMs = 3000 } = {}) {
   // 서버가 작업 도중 꺼졌다면 다시 대기 상태로 돌립니다.
   for (const j of store.find('jobs', (j) => j.status === 'running')) store.update('jobs', j.id, { status: 'queued', attempts: j.attempts - 1 });
 
-  let busy = false;
+  const busy = { studio: false, office: false };
+  ctx.runningJobs = {};
   let lastMaintenance = 0;
+  const runLane = async (lane) => {
+    if (busy[lane]) return;
+    const job = nextJob(store, Date.now(), lane);
+    if (!job) return;
+    busy[lane] = true;
+    ctx.runningJobs[lane] = job;
+    ctx.running = ctx.runningJobs.office ?? ctx.runningJobs.studio ?? null;
+    store.emit('change', { collection: 'agent' });
+    try {
+      await runJob(ctx, job);
+    } finally {
+      busy[lane] = false;
+      delete ctx.runningJobs[lane];
+      ctx.running = ctx.runningJobs.office ?? ctx.runningJobs.studio ?? null;
+      store.emit('change', { collection: 'agent' });
+    }
+  };
   const tick = async () => {
-    if (busy || store.settings.paused || !store.settings.apiKey) return;
+    if (store.settings.paused || !store.settings.apiKey) return;
     // 1분마다 일정 지연 · 연체 · 스탠드업 시간을 점검합니다(Claude 호출 없음).
     if (Date.now() - lastMaintenance > 60e3) {
       lastMaintenance = Date.now();
       try { maintenance(store); } catch (err) { store.log('error', `정기 점검 실패: ${err.message}`); }
     }
-    const job = nextJob(store);
-    if (!job) return;
-    busy = true;
-    ctx.running = job;
-    store.emit('change', { collection: 'agent' });
-    try {
-      await runJob(ctx, job);
-    } finally {
-      busy = false;
-      ctx.running = null;
-      store.emit('change', { collection: 'agent' });
-    }
+    await Promise.all([runLane('office'), runLane('studio')]);
   };
   const timer = setInterval(tick, intervalMs);
   timer.unref?.();

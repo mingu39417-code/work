@@ -13,7 +13,7 @@ import { DEFAULT_CONTRACT } from './contract.mjs';
 export const COLLECTIONS = [
   'clients', 'projects', 'messages', 'designs', 'quotes', 'invoices',
   'approvals', 'jobs', 'activity', 'leads', 'alerts', 'usage', 'accounts', 'lessons',
-  'staff', 'reports', 'contracts', 'social_posts', 'social_comments',
+  'staff', 'reports', 'contracts', 'social_posts', 'social_comments', 'blog_posts',
 ];
 
 const ACTIVITY_LIMIT = 3000;
@@ -75,7 +75,9 @@ export function defaultSettings() {
       social_reply: 'auto',
     },
     // SNS 영업(인스타그램 · Threads): 댓글 확인 주기와 시간당 답글 한도
-    social: { replies: true, syncMinutes: 10, maxRepliesPerHour: 30 },
+    social: { enabled: false, replies: true, syncMinutes: 10, maxRepliesPerHour: 30 },
+    // 네이버 블로그: 발행 대기 글을 몇 개 준비해 둘지, 내 블로그 아이디(발행 확인용 RSS)
+    blog: { enabled: true, blogId: '', keepReady: 3 },
     design: { selfReview: true, maxReworks: 2, copywriting: true },
     company: {
       requireContract: true,

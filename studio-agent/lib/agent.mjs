@@ -10,6 +10,7 @@ import {
 import { accountManagerSystem, salesSystem } from './prompts.mjs';
 import { textOf } from './claude.mjs';
 import { lead as leadStaff, leadOrFallback, projectStaff, modelFor, staffBlock, staffLabel } from './staff.mjs';
+import { weekdayProblems, calendarLine } from './calendar.mjs';
 
 const MAX_STEPS = 12;
 
@@ -155,7 +156,10 @@ async function runAccountTool(ctx, project, name, input) {
   const p = () => store.get('projects', project.id);
 
   switch (name) {
-    case 'reply_to_client':
+    case 'reply_to_client': {
+      const bad = weekdayProblems(input.message);
+      if (bad) return `보내지 않았습니다 — 날짜 요일이 달력과 다릅니다: ${bad}. 상태 정보의 달력을 보고 고쳐서 다시 보내세요.`;
+    }
       return gated(ctx, 'client_reply', { type: 'client_message', projectId: project.id, message: input.message }, short(input.message));
 
     case 'update_project': {
@@ -194,6 +198,8 @@ async function runAccountTool(ctx, project, name, input) {
 
     case 'start_design_round': {
       const cur = p();
+      const badDate = weekdayProblems(input.instructions);
+      if (badDate) return `시작하지 않았습니다 — 지시문의 날짜 요일이 달력과 다릅니다: ${badDate}. 고쳐서 다시 호출하세요.`;
       const why = workAllowed(store, cur);
       if (why) return `시작할 수 없습니다: ${why}`;
       const limit = roundLimit(store, cur);
@@ -204,7 +210,7 @@ async function runAccountTool(ctx, project, name, input) {
       if (running) return '이미 진행 중인 디자인 작업이 있습니다. designs_ready를 기다리세요.';
       const concepts = Math.min(3, Math.max(1, Math.round(Number(input.concepts) || 1)));
       // 킥오프 전이면 PM이 먼저 일정을 잡고 디자이너를 배정합니다(디자인 작업은 그다음에 실행).
-      if (!cur.plan && !cur.simulation) enqueue(store, 'kickoff', { projectId: cur.id }, { dedupe: `kickoff:${cur.id}` });
+      if (!cur.plan) enqueue(store, 'kickoff', { projectId: cur.id }, { dedupe: `kickoff:${cur.id}` });
       enqueue(store, 'design', { projectId: cur.id, instructions: input.instructions, concepts, baseDesignIds: input.base_design_ids ?? [] }, { delayMs: 1000 });
       if (cur.status !== 'in_progress' && cur.status !== 'revision') {
         store.update('projects', cur.id, { status: cur.designRounds > 0 ? 'revision' : 'in_progress' });
@@ -300,6 +306,7 @@ export function buildProjectContext(store, project, events) {
   }).join('\n');
 
   return `Now: ${new Date().toISOString()} (owner works ${s.profile.workingHours})
+Calendar (KST, month/day+weekday — copy weekdays from here, never compute them): ${calendarLine()}
 
 # Event(s) to handle
 ${events.map((e) => `- ${describeEvent(store, e, project)}`).join('\n')}

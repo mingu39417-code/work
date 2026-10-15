@@ -201,3 +201,24 @@ test('시안 파일이 너무 길어 잘리면 그 시안만 간결하게 다시
   assert.match(JSON.stringify(makes[1].body.messages), /cut off because the file was far too long/);
   assert.equal(store.find('designs', (d) => d.projectId === project.id).length, 1);
 });
+
+test('고객에게 보이는 시안 설명에는 내부 메모 · 검수 이야기가 들어가지 않고, 그런 내용은 사내 채널로 갑니다', async () => {
+  const { splitRationale } = await import('../lib/designer.mjs');
+  const r = splitRationale("통통한 손글씨 '3'과 '주년'을 아래쪽 곡선에 맞춰 붙였습니다. 멀리서도 '3주년' 순서로 읽히도록 했습니다. 이번 수정에서는 원을 r122로 줄이고 화환을 6mm 올렸습니다. 대표님께 전달할 메모: PDF로 변환해 주세요.");
+  assert.equal(r.client, "통통한 손글씨 '3'과 '주년'을 아래쪽 곡선에 맞춰 붙였습니다. 멀리서도 '3주년' 순서로 읽히도록 했습니다.");
+  assert.match(r.internal, /r122/);
+  assert.match(r.internal, /대표님께/);
+  const { ctx } = makeCtx((body, kind) => {
+    if (kind === 'directions') return json({ directions: [{ name: 'x', idea: 'x', palette: ['#000'], typography: 'x', layout: 'x', format: 'svg' }] });
+    if (kind === 'make') return json({ title: '시안', rationale: '따뜻한 느낌으로 만들었습니다. 대표님께: 인쇄용 PDF로 바꿔 주세요.', internal_note: '도련 3mm 넣음', format: 'svg', code: SVG });
+    if (kind === 'review') return json({ score: 9, summary: '좋음', issues: [], decision: 'approve' });
+    return account(body);
+  }, { design: { copywriting: false } });
+  const project = await createInquiry(ctx, { name: 'A', email: 'a@a.kr', description: '포스터' });
+  const { runDesignJob } = await import('../lib/designer.mjs');
+  await runDesignJob(ctx, { projectId: project.id, instructions: 'x', concepts: 1, baseDesignIds: [] });
+  const d = ctx.store.findOne('designs', (x) => x.projectId === project.id);
+  assert.equal(d.rationale, '따뜻한 느낌으로 만들었습니다.');
+  const memo = ctx.store.findOne('messages', (m) => m.projectId === project.id && m.internal && /디자이너 메모/.test(m.text));
+  assert.ok(memo && /도련 3mm/.test(memo.text) && /PDF/.test(memo.text));
+});

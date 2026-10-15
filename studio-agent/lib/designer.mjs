@@ -12,6 +12,7 @@ import { lead, pickDesigner, modelFor, staffBlock } from './staff.mjs';
 import { completeMilestones } from './pm.mjs';
 import { designerSystem } from './prompts.mjs';
 import { jsonOf } from './claude.mjs';
+import { weekdayProblems, calendarLine } from './calendar.mjs';
 
 const MAX_CODE_IN_CONTEXT = 60000;
 
@@ -67,10 +68,11 @@ const DESIGN_SCHEMA = {
   properties: {
     title: { type: 'string' },
     rationale: { type: 'string' },
+    internal_note: { type: 'string' },
     format: { type: 'string', enum: ['svg', 'html'] },
     code: { type: 'string' },
   },
-  required: ['title', 'rationale', 'format', 'code'],
+  required: ['title', 'rationale', 'internal_note', 'format', 'code'],
   additionalProperties: false,
 };
 
@@ -107,6 +109,15 @@ function imageBlocks(store, project) {
   return blocks;
 }
 
+// 고객에게 보이는 설명에서 내부용 문장(대표 · 팀에게 하는 말, 검수 · 재작업 이야기)을 걸러 냅니다.
+const INTERNAL = /대표님|사내|팀에게|메모|AD|아트 ?디렉터|검수|재작업|반려|수정 ?지시|r\d{2,}|\d+\s*mm/;
+export function splitRationale(text) {
+  const sentences = String(text ?? '').split(/(?<=[.!?。]|[다요]\.)\s+/);
+  const client = sentences.filter((x) => !INTERNAL.test(x)).join(' ').trim();
+  const internal = sentences.filter((x) => INTERNAL.test(x)).join(' ').trim();
+  return { client: client || '시안 설명은 담당자가 따로 안내드립니다.', internal };
+}
+
 export function briefText(store, project, job) {
   const s = store.settings;
   const service = s.services.find((x) => x.id === project.serviceId);
@@ -126,6 +137,9 @@ ${project.brief || '(no written brief — rely on the instructions and client me
 
 ## This round's instructions (from the account manager)
 ${job.instructions}
+
+## Calendar (KST) — use these weekdays exactly
+${calendarLine()}
 
 ## Recent client messages (for tone and details)
 ${feedback || '(none)'}`;
@@ -214,7 +228,7 @@ export async function runDesignJob(ctx, job) {
           role: 'user',
           content: [
             ...images,
-            { type: 'text', text: `${brief}\n\n${base ? `${base}\n\n` : ''}# Direction from the art director\n${JSON.stringify(dir, null, 1)}${copyText}${feedback ? `\n\n# The art director sent your previous version back. Fix every point:\n${feedback}\n\n# Your previous version\n\`\`\`\n${best.code.slice(0, MAX_CODE_IN_CONTEXT)}\n\`\`\`` : ''}${tooLong ? '\n\n# Your last attempt was cut off because the file was far too long. Keep the same direction but make the file much more compact: draw the mark once in <defs> and reuse it with <use>, keep mockups to simple flat shapes, round coordinates to 1 decimal.' : ''}\n\nProduce the finished design file now. "code" is the complete ${dir.format.toUpperCase()} document. "rationale" is 2-3 sentences in the client's language explaining the idea. "title" is a short concept name in the client's language.` },
+            { type: 'text', text: `${brief}\n\n${base ? `${base}\n\n` : ''}# Direction from the art director\n${JSON.stringify(dir, null, 1)}${copyText}${feedback ? `\n\n# The art director sent your previous version back. Fix every point:\n${feedback}\n\n# Your previous version\n\`\`\`\n${best.code.slice(0, MAX_CODE_IN_CONTEXT)}\n\`\`\`` : ''}${tooLong ? '\n\n# Your last attempt was cut off because the file was far too long. Keep the same direction but make the file much more compact: draw the mark once in <defs> and reuse it with <use>, keep mockups to simple flat shapes, round coordinates to 1 decimal.' : ''}\n\nProduce the finished design file now. "code" is the complete ${dir.format.toUpperCase()} document. "rationale" is shown to the client: 2-3 plain sentences in the client's language about the idea and how it serves their goal — never internal review details, measurements, rework history, or messages to the owner or team. Put anything for the owner or team (production notes, print requests, open questions) in "internal_note" (empty string if none). "title" is a short concept name in the client's language.` },
           ],
         }],
       }, 'design_make', { projectId: project.id, staffId: designer?.id });
@@ -227,6 +241,16 @@ export async function runDesignJob(ctx, job) {
       }
       const design = jsonOf(makeMsg);
       if (!looksValid(design.format, design.code)) throw new Error(`시안 "${dir.name}"의 ${design.format} 코드가 올바르지 않습니다`);
+      // 사실 확인(코드): 시안 속 날짜 요일이 틀리면 AD 검수 전에 바로 돌려보냅니다.
+      const dateBad = weekdayProblems(design.code.replace(/<[^>]+>/g, ' '));
+      if (dateBad) {
+        const issue = `[사실 오류 · 필수] ${dateBad}. 브리프의 달력대로 고치세요.`;
+        const flagged = { ...design, review: { score: 5, summary: `날짜 요일 오류: ${dateBad}`, issues: [issue] }, reworks: attempt, passed: false };
+        if (!best || (best.review?.score ?? 0) <= 5) best = flagged;
+        feedback = `- ${issue}`;
+        if (attempt < maxReworks) await say(ad, `[반려 · 자동 사실 확인] 「${design.title}」 — ${issue}`);
+        continue;
+      }
 
       if (!s.design.selfReview) {
         best = { ...design, review: null, reworks: attempt };
@@ -260,7 +284,7 @@ export async function runDesignJob(ctx, job) {
       projectId: project.id,
       round,
       title: best.title,
-      rationale: best.rationale,
+      rationale: splitRationale(best.rationale).client,
       format: best.format,
       code: best.code,
       direction: dir,
@@ -277,6 +301,8 @@ export async function runDesignJob(ctx, job) {
       baseDesignIds: job.baseDesignIds ?? [],
     });
     created.push(row.id);
+    const note = [best.internal_note, splitRationale(best.rationale).internal].filter((x) => x && x.trim()).join(' / ');
+    if (note) await say(designer, `[디자이너 메모 · 대표님/팀 확인] 「${best.title}」 ${note}`);
     store.log('design', `시안 완성: ${best.title}${best.review ? ` (AD 검수 ${best.review.score}/10, 재작업 ${best.reworks}회)` : ''} — ${short(project.title, 40)}`, { projectId: project.id });
   }
 

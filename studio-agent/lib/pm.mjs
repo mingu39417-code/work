@@ -9,6 +9,8 @@ import { enqueue, enqueueAgent, postMessage, money, short, STATUSES, ACTIVE_STAT
 import { jsonOf, textOf } from './claude.mjs';
 import { lead, assign, pickDesigner, projectStaff, modelFor, staffBlock, staffLabel } from './staff.mjs';
 import { profileBlock, lessonsBlock } from './prompts.mjs';
+import { keepBlogQueue } from './blog.mjs';
+import { calendarLine } from './calendar.mjs';
 
 const KST = 9 * 3600e3;
 const kstDate = (t = Date.now()) => new Date(t + KST).toISOString().slice(0, 10);
@@ -64,6 +66,9 @@ Brief: ${project.brief || '(see quote)'}
 Client deadline: ${project.deadline || '(none given)'}
 Quote: ${q ? `${q.items.map((i) => i.name).join(', ')} — ${q.timelineDays} working days, ${q.revisions} revision rounds` : '(none)'}
 Team: PM (you) ${staffLabel(pm)}; AM ${staffLabel(projectStaff(store, project, 'am'))}; AD ${staffLabel(lead(store, 'ad'))}; designer ${staffLabel(designer)}${cw ? `; copywriter ${staffLabel(cw)}` : ''}
+Payment: ${project.simulation || !s.policy.requireDeposit ? 'No deposit is needed (practice run or studio policy) — work starts now. Do not mention deposits.' : `Work starts after the ${s.policy.depositPercent}% deposit is confirmed by the owner.`}
+Where the project stands now: status ${project.status}, design rounds done ${project.designRounds ?? 0}, designs shown to the client ${store.find('designs', (x) => x.projectId === project.id && x.shared).length}. Plan from the current stage — do not schedule work that is already done.
+Calendar (KST): ${calendarLine(45)}
 
 Plan 4-7 milestones from now to final delivery (dates as YYYY-MM-DD, working days only, inside the quoted timeline and the client deadline). Use these owner codes: am, pm, ad, designer, copywriter, finance, client. Include: creative direction (ad), ${cw ? 'copy (copywriter), ' : ''}first concepts (designer), internal review (ad), client presentation (am), client feedback (client), revision(s), final files (designer), final invoice (finance). List the main risks. "kickoff_note" is a short Korean message to the team in the internal channel.`,
     }],
@@ -190,10 +195,18 @@ export function maintenance(store, now = Date.now()) {
     enqueue(store, 'standup', { day: today });
   }
 
+  // 네이버 블로그: 발행 대기 글을 미리 써 두고, 대표가 발행했는지 공개 RSS로 확인
+  if (s.apiKey) keepBlogQueue(store);
+  const waitingBlog = store.findOne('blog_posts', (x) => x.status === 'filled');
+  if (s.blog?.blogId && waitingBlog && now - Date.parse(s.blog?.lastRssCheckAt ?? 0) >= 20 * 60e3 && !store.findOne('jobs', (j) => j.kind === 'blog_check' && ['queued', 'running'].includes(j.status))) {
+    store.updateSettings({ blog: { lastRssCheckAt: new Date(now).toISOString() } });
+    enqueue(store, 'blog_check', {});
+  }
+
   // SNS 댓글 확인(연결된 계정이 있을 때만)
   const social = store.find('accounts', (a) => ['threads', 'instagram'].includes(a.kind) && a.enabled !== false && a.status !== 'expired');
   const every = Math.max(5, Number(s.social?.syncMinutes) || 10) * 60e3;
-  if (social.length && now - Date.parse(s.social?.lastSyncAt ?? 0) >= every && !store.findOne('jobs', (j) => j.kind === 'social_sync' && ['queued', 'running'].includes(j.status))) {
+  if (s.social?.enabled && social.length && now - Date.parse(s.social?.lastSyncAt ?? 0) >= every && !store.findOne('jobs', (j) => j.kind === 'social_sync' && ['queued', 'running'].includes(j.status))) {
     store.updateSettings({ social: { lastSyncAt: new Date(now).toISOString() } });
     enqueue(store, 'social_sync', {});
   }

@@ -48,7 +48,7 @@ const writer = (body, kind) => {
 };
 
 async function setup({ publicUrl = 'https://studio.example', consent = { portfolio: true, named: false }, meta } = {}) {
-  const { ctx, calls } = makeCtx(writer, { publicUrl, policy: { requireDeposit: false } });
+  const { ctx, calls } = makeCtx(writer, { publicUrl, policy: { requireDeposit: false }, social: { enabled: true } });
   const fake = meta ?? fakeMeta();
   ctx.fetch = fake.fetch;
   ctx.sleep = async () => {};

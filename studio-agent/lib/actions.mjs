@@ -488,6 +488,8 @@ export async function acceptQuoteByClient(ctx, project, quoteId, consent = {}) {
     store.log('deal', `계약서 발송 — ${project.title}`, { projectId: project.id, contractId: contract.id });
   }
   store.log('deal', `견적 수락! ${money(store.settings, q.total)} — ${project.title}`, { projectId: project.id });
+  // 계약금이 필요 없는 경우(연습 포함)엔 수락 즉시 PM 킥오프 — 계약금이 있으면 입금 확인 때 합니다.
+  if (project.simulation || !store.settings.policy.requireDeposit) enqueue(store, 'kickoff', { projectId: project.id }, { dedupe: `kickoff:${project.id}` });
   enqueueAgent(store, project.id, { kind: 'quote_accepted', quoteId: q.id });
   return true;
 }
@@ -536,7 +538,7 @@ export async function completeProject(ctx, project) {
   store.update('projects', project.id, { status: 'completed' });
   enqueue(store, 'retro', { projectId: project.id }, { dedupe: `retro:${project.id}` });
   // 고객이 동의한 실제 작업이면 SNS 홍보 글을 준비합니다(올리기 전 대표 승인).
-  if (project.portfolioConsent && !project.simulation && Object.keys(PLATFORMS).some((p) => socialAccount(store, p))) {
+  if (store.settings.social?.enabled && project.portfolioConsent && !project.simulation && Object.keys(PLATFORMS).some((p) => socialAccount(store, p))) {
     enqueue(store, 'social_compose', { projectId: project.id }, { dedupe: `social_compose:${project.id}` });
   }
   const ready = store.find('designs', (d) => d.projectId === project.id && d.approved && d.finalStatus === 'ready').length > 0;

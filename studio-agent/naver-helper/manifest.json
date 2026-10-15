@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "온결 스튜디오 블로그 도우미",
+  "version": "1.0.0",
+  "description": "스튜디오 에이전트가 써 둔 글을 네이버 블로그 글쓰기 창에 채워 줍니다. 발행은 직접 누릅니다.",
+  "host_permissions": ["http://127.0.0.1:4300/*", "http://localhost:4300/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["https://blog.naver.com/*"], "js": ["content.js"], "all_frames": true, "run_at": "document_idle" }
+  ]
+}
