@@ -4,7 +4,7 @@
 
 import { STATUSES, money, studioName } from './actions.mjs';
 
-function profileBlock(s) {
+export function profileBlock(s) {
   const p = s.profile;
   const services = s.services
     .map((x) => `- [${x.id}] ${x.name}: 정가 ${money(s, x.basePrice)}, 최저가 ${money(s, x.minPrice)}, 기본 ${x.days}일, 수정 ${x.revisions}회 포함. ${x.description}`)
@@ -40,7 +40,7 @@ function disclosure(s) {
 }
 
 // 대표가 연습 모드에서 남긴 코칭 피드백 — 실제 업무에도 그대로 적용됩니다.
-function lessonsBlock(s, lessons, scope) {
+export function lessonsBlock(s, lessons, scope) {
   const list = lessons.filter((l) => l.active !== false && (l.scope === 'all' || l.scope === scope));
   if (!list.length) return '';
   return `\n\n## Owner's coaching (learned from practice sessions — follow these; they override your defaults)\n${list.map((l) => `- ${l.text}`).join('\n')}`;

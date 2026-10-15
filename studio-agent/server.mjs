@@ -15,10 +15,13 @@ import { startScheduler } from './lib/scheduler.mjs';
 import {
   STATUSES, ACTIVE_STATUSES, AUTONOMY_LABELS, createInquiry, postMessage, enqueue, enqueueAgent,
   executeAction, acceptQuoteByClient, approveDesignByClient, markInvoicePaid, canDownload,
-  studioName, portalUrl, short, aiNotice, OUTREACH_BASIS, outreachBlocked,
+  studioName, portalUrl, short, aiNotice, OUTREACH_BASIS, outreachBlocked, contractOf, signContractByClient,
 } from './lib/actions.mjs';
 import { mailAccount, mailer, GMAIL, accountAuth } from './lib/mailer.mjs';
 import { startInboxPoller } from './lib/inbox.mjs';
+import { ROLES, staffLabel } from './lib/staff.mjs';
+import { financeSummary } from './lib/pm.mjs';
+import { DEFAULT_CONTRACT } from './lib/contract.mjs';
 import { ImapFlow } from 'imapflow';
 
 // 개인정보 처리 안내 (문의 양식 · 메일에서 연결) — 설정의 프로필 · 보유 기간으로 만듭니다.
@@ -168,7 +171,8 @@ function portalView(store, project) {
     canDownload: dl,
     messages: store
       .find('messages', (m) => m.projectId === project.id && !m.internal)
-      .map((m) => ({ id: m.id, from: m.from === 'client' ? 'client' : m.from === 'system' ? 'system' : 'studio', text: m.text, at: m.createdAt, designIds: m.designIds, quoteId: m.quoteId, invoiceId: m.invoiceId, attachments: m.attachments })),
+      .map((m) => ({ id: m.id, from: m.from === 'client' ? 'client' : m.from === 'system' ? 'system' : 'studio', who: m.from === 'agent' && m.staffId ? staffLabel(store.get('staff', m.staffId)) : null, text: m.text, at: m.createdAt, designIds: m.designIds, quoteId: m.quoteId, invoiceId: m.invoiceId, attachments: m.attachments })),
+    contract: (() => { const c = contractOf(store, project); return c ? { id: c.id, body: c.body, status: c.status, signerName: c.signerName ?? null, signedAt: c.signedAt ?? null } : null; })(),
     designs: store.find('designs', (d) => d.projectId === project.id && d.shared).map((d) => ({ id: d.id, title: d.title, rationale: d.rationale, format: d.format, round: d.round, approved: d.approved })),
     simulation: Boolean(project.simulation),
     quotes: store.find('quotes', (q) => q.projectId === project.id && q.status !== 'superseded').map(({ id, items, total, timelineDays, revisions, terms, status }) => ({ id, items, total, timelineDays, revisions, terms, status })),
@@ -251,7 +255,36 @@ function projectDetail(store, p) {
     approvals: store.find('approvals', (a) => a.projectId === p.id),
     jobs: store.find('jobs', (j) => j.payload.projectId === p.id).slice(-20),
     usage: store.find('usage', (u) => u.projectId === p.id).reduce((t, u) => t + u.cost, 0),
+    contract: contractOf(store, p),
+    staff: Object.fromEntries(store.all('staff').map((x) => [x.id, { name: x.name, role: x.role, label: staffLabel(x) }])),
+    reports: store.find('reports', (r) => r.projectId === p.id),
   };
+}
+
+// 직원별 성과 · 비용 (이번 달)
+function staffView(store) {
+  const month = new Date().toISOString().slice(0, 7);
+  return store.all('staff').map((st) => {
+    const usage = store.find('usage', (u) => u.staffId === st.id);
+    const made = store.find('designs', (d) => d.designerId === st.id);
+    const reviewed = store.find('designs', (d) => d.reviewerId === st.id);
+    const scores = made.map((d) => d.review?.score).filter(Boolean);
+    const active = store.find('projects', (p) => !p.simulation && ACTIVE_STATUSES.includes(p.status) && (st.role === 'designer' ? p.designerId === st.id : ['am', 'pm', 'finance', 'ad'].includes(st.role)));
+    return {
+      ...st,
+      roleLabel: ROLES[st.role]?.label ?? st.role,
+      duty: ROLES[st.role]?.duty ?? '',
+      stats: {
+        activeProjects: active.length,
+        designsMade: made.length,
+        designsReviewed: reviewed.length,
+        avgScore: scores.length ? +(scores.reduce((a, b) => a + b, 0) / scores.length).toFixed(1) : null,
+        reworks: made.reduce((t, d) => t + (d.reworks ?? 0), 0),
+        calls: usage.length,
+        costMonth: usage.filter((u) => u.day.startsWith(month)).reduce((t, u) => t + u.cost, 0),
+      },
+    };
+  });
 }
 
 // ── 앱 ────────────────────────────────────────────────────────
@@ -352,6 +385,12 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       }
       if (m === 'POST' && (h = /^\/quotes\/(\w+)\/accept$/.exec(sub))) {
         if (!(await acceptQuoteByClient(ctx, project, h[1]))) throw new HttpError(409, '수락할 수 없는 견적입니다');
+        return send(res, 200, { ok: true });
+      }
+      if (m === 'POST' && (h = /^\/contracts\/(\w+)\/sign$/.exec(sub))) {
+        const b = await readJson(req);
+        if (b.agree !== true) throw new HttpError(400, '계약 내용에 동의해 주세요');
+        if (!(await signContractByClient(ctx, project, h[1], b.name))) throw new HttpError(409, '서명할 수 없는 계약서이거나 이름이 비어 있습니다');
         return send(res, 200, { ok: true });
       }
       if (m === 'POST' && (h = /^\/designs\/(\w+)\/approve$/.exec(sub))) {
@@ -703,6 +742,53 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
         return send(res, 200, { ok: true });
       }
     }
+
+    // 직원 (조직)
+    if (m === 'GET' && p === '/api/staff') return send(res, 200, staffView(store));
+    if (m === 'POST' && p === '/api/staff') {
+      const b = await readJson(req);
+      if (!ROLES[b.role]) throw new HttpError(400, '직무를 선택하세요');
+      if (!String(b.name ?? '').trim()) throw new HttpError(400, '이름을 입력하세요');
+      if (b.model && !MODELS[b.model]) throw new HttpError(400, '지원하지 않는 모델');
+      const st = store.insert('staff', { name: String(b.name).trim().slice(0, 30), role: b.role, title: ROLES[b.role].label, persona: String(b.persona ?? '').slice(0, 500), model: b.model || '', active: true });
+      store.log('hr', `채용: ${st.name} (${ROLES[st.role].label})`);
+      return send(res, 200, st);
+    }
+    if ((g = /^\/api\/staff\/(\w+)$/.exec(p)) && m === 'PATCH') {
+      const st = store.get('staff', g[1]);
+      if (!st) throw new HttpError(404, '직원 없음');
+      const b = await readJson(req);
+      const patch = {};
+      if (typeof b.name === 'string' && b.name.trim()) patch.name = b.name.trim().slice(0, 30);
+      if (typeof b.persona === 'string') patch.persona = b.persona.slice(0, 500);
+      if (typeof b.model === 'string') { if (b.model && !MODELS[b.model]) throw new HttpError(400, '지원하지 않는 모델'); patch.model = b.model; }
+      if (typeof b.active === 'boolean') {
+        // 각 직무에 최소 한 명은 남아 있어야 회사가 돌아갑니다.
+        if (!b.active && store.find('staff', (x) => x.role === st.role && x.active !== false && x.id !== st.id).length === 0) throw new HttpError(409, `${ROLES[st.role].label} 직무에 남는 사람이 없어 휴직 처리할 수 없습니다`);
+        patch.active = b.active;
+      }
+      store.update('staff', st.id, patch);
+      store.log('hr', `직원 정보 변경: ${store.get('staff', st.id).name}`);
+      return send(res, 200, { ok: true });
+    }
+
+    // 보고서 · 재무
+    if (m === 'GET' && p === '/api/reports') return send(res, 200, store.all('reports').slice().reverse().slice(0, 100).map((r) => ({ ...r, staffName: store.get('staff', r.staffId)?.name ?? null, project: r.projectId ? store.get('projects', r.projectId)?.title : null })));
+    if (m === 'POST' && p === '/api/reports/standup') {
+      enqueue(store, 'standup', { manual: true }, { dedupe: 'standup:manual' });
+      return send(res, 200, { ok: true });
+    }
+    if (m === 'POST' && (g = /^\/api\/reports\/(\w+)\/proposals\/(\d+)\/(adopt|dismiss)$/.exec(p))) {
+      const r = store.get('reports', g[1]);
+      const prop = r?.proposals?.[Number(g[2])];
+      if (!prop || prop.status !== 'pending') throw new HttpError(409, '이미 처리했거나 없는 제안입니다');
+      const proposals = r.proposals.map((x, i) => (i === Number(g[2]) ? { ...x, status: g[3] === 'adopt' ? 'adopted' : 'dismissed' } : x));
+      store.update('reports', r.id, { proposals });
+      if (g[3] === 'adopt') store.insert('lessons', { text: prop.text, scope: prop.scope, projectId: r.projectId ?? null, source: 'retro', active: true });
+      return send(res, 200, { ok: true });
+    }
+    if (m === 'GET' && p === '/api/finance') return send(res, 200, financeSummary(store, url.searchParams.get('month') || undefined));
+    if (m === 'GET' && p === '/api/contract-template') return send(res, 200, { template: store.settings.company.contractTemplate, default: DEFAULT_CONTRACT });
 
     // 기록 · 알림 · 작업
     if (m === 'GET' && p === '/api/activity') {

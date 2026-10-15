@@ -3,6 +3,8 @@
 
 import { mailer } from './mailer.mjs';
 import crypto from 'node:crypto';
+import { renderContract } from './contract.mjs';
+import { lead as leadStaff } from './staff.mjs';
 
 export const STATUSES = {
   inquiry: '문의',
@@ -99,7 +101,7 @@ export async function emailClient(ctx, project, { subject, text, attachments }) 
   return mailer.send(store, { to: client?.email, subject, text: body, attachments, ...threadHeaders(store, project) });
 }
 
-export async function postMessage(ctx, project, { from, text, internal = false, designIds, quoteId, invoiceId, attachments, emailId }) {
+export async function postMessage(ctx, project, { from, text, internal = false, designIds, quoteId, invoiceId, attachments, emailId, staffId }) {
   const { store } = ctx;
   const msg = store.insert('messages', {
     projectId: project.id,
@@ -111,6 +113,8 @@ export async function postMessage(ctx, project, { from, text, internal = false, 
     invoiceId: invoiceId ?? null,
     attachments: attachments ?? [],
     emailId: emailId ?? null,
+    // 고객 응대 메시지는 담당 AM 이름으로 기록됩니다.
+    staffId: staffId ?? (from === 'agent' ? leadStaff(store, 'am')?.id ?? null : null),
   });
   store.update('projects', project.id, { lastMessageAt: msg.createdAt });
 
@@ -209,10 +213,34 @@ export function workAllowed(store, project) {
   // 연습 프로젝트는 디자인 연습에 집중하도록 견적 · 계약금 없이도 작업할 수 있습니다.
   if (project.simulation) return null;
   if (!acceptedQuote(store, project)) return '고객이 아직 견적을 수락하지 않았습니다.';
+  if (contractPending(store, project)) return '고객이 아직 계약서에 서명하지 않았습니다.';
   if (store.settings.policy.requireDeposit && !depositPaid(store, project)) {
     return '계약금 입금이 확인되지 않았습니다. 계약금 청구서를 보내고 대표가 입금을 확인하면 작업을 시작할 수 있습니다.';
   }
   return null;
+}
+
+// ── 계약서 ────────────────────────────────────────────────────
+export function contractOf(store, project) {
+  return store.find('contracts', (c) => c.projectId === project.id && c.status !== 'void').at(-1) ?? null;
+}
+
+// 계약서가 필요한데 아직 서명되지 않았으면 true
+export function contractPending(store, project) {
+  if (project.simulation || !store.settings.company.requireContract) return false;
+  return contractOf(store, project)?.status !== 'signed';
+}
+
+export async function signContractByClient(ctx, project, contractId, signerName) {
+  const { store } = ctx;
+  const c = store.get('contracts', contractId);
+  const name = String(signerName ?? '').trim();
+  if (!c || c.projectId !== project.id || c.status !== 'sent' || name.length < 2) return false;
+  store.update('contracts', c.id, { status: 'signed', signerName: name.slice(0, 60), signedAt: new Date().toISOString() });
+  await postMessage(ctx, project, { from: 'system', text: `고객(${name})이 계약서에 동의 · 서명했습니다.` });
+  store.log('deal', `계약 체결 — ${project.title}`, { projectId: project.id });
+  enqueueAgent(store, project.id, { kind: 'contract_signed', contractId: c.id });
+  return true;
 }
 
 export function roundLimit(store, project) {
@@ -237,6 +265,7 @@ export function validateInvoice(store, project, input) {
   const amount = Number(input.amount);
   if (!Number.isFinite(amount) || amount <= 0) return '청구 금액이 올바르지 않습니다.';
   if (EXTRA_KINDS.includes(input.kind)) return null;
+  if (contractPending(store, project)) return '계약서 서명이 끝난 뒤에 청구할 수 있습니다.';
   const q = acceptedQuote(store, project);
   if (!q) return '수락된 견적이 없어 청구할 수 없습니다. 견적 밖 추가 비용이면 kind를 extra 또는 extra_revision으로 하세요.';
   const remaining = invoiceRemaining(store, project);
@@ -417,6 +446,13 @@ export async function acceptQuoteByClient(ctx, project, quoteId) {
   store.update('quotes', q.id, { status: 'accepted', acceptedAt: new Date().toISOString() });
   store.update('projects', project.id, { status: 'accepted' });
   await postMessage(ctx, project, { from: 'system', text: `고객이 견적(${money(store.settings, q.total)})을 수락했습니다.` });
+  if (!project.simulation && store.settings.company.requireContract) {
+    for (const old of store.find('contracts', (c) => c.projectId === project.id && c.status === 'sent')) store.update('contracts', old.id, { status: 'void' });
+    const client = store.get('clients', project.clientId);
+    const contract = store.insert('contracts', { projectId: project.id, quoteId: q.id, body: renderContract(store.settings, { project: store.get('projects', project.id), client, quote: store.get('quotes', q.id) }), status: 'sent' });
+    await postMessage(ctx, project, { from: 'system', text: '용역 계약서가 준비되었습니다. 프로젝트 페이지에서 내용을 확인하고 서명해 주세요.' });
+    store.log('deal', `계약서 발송 — ${project.title}`, { projectId: project.id, contractId: contract.id });
+  }
   store.log('deal', `견적 수락! ${money(store.settings, q.total)} — ${project.title}`, { projectId: project.id });
   enqueueAgent(store, project.id, { kind: 'quote_accepted', quoteId: q.id });
   return true;
@@ -441,7 +477,11 @@ export async function markInvoicePaid(ctx, invoiceId) {
   const project = store.get('projects', inv.projectId);
   const s = store.settings;
   if (inv.kind === 'extra_revision') store.update('projects', project.id, { extraRounds: (project.extraRounds ?? 0) + 1 });
-  if (inv.kind === 'deposit' && project.status === 'accepted') store.update('projects', project.id, { status: 'in_progress' });
+  if (inv.kind === 'deposit' && project.status === 'accepted') {
+    store.update('projects', project.id, { status: 'in_progress' });
+    // 계약금이 들어오면 PM이 킥오프(일정 수립 · 담당 배정)를 합니다.
+    enqueue(store, 'kickoff', { projectId: project.id }, { dedupe: `kickoff:${project.id}` });
+  }
   const unpaid = store.find('invoices', (i) => i.projectId === project.id && i.status === 'sent').length;
   await postMessage(ctx, project, { from: 'system', text: `입금 확인: ${money(s, inv.amount)} (${inv.description || inv.kind})` });
   store.log('payment', `입금 확인 ${money(s, inv.amount)} — ${project.title}`, { projectId: project.id });
@@ -457,6 +497,7 @@ export async function completeProject(ctx, project) {
   if (!acceptedQuote(store, project) || invoiceRemaining(store, project) > 0) return false;
   if (store.find('invoices', (i) => i.projectId === project.id && i.status === 'sent').length) return false;
   store.update('projects', project.id, { status: 'completed' });
+  enqueue(store, 'retro', { projectId: project.id }, { dedupe: `retro:${project.id}` });
   const designs = store.find('designs', (d) => d.projectId === project.id && d.shared);
   const finals = designs.filter((d) => d.approved);
   const files = (finals.length ? finals : designs.filter((d) => d.round === Math.max(...designs.map((x) => x.round)))).map((d) => ({

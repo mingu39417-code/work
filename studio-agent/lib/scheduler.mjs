@@ -3,6 +3,7 @@
 
 import { runAccountManager, runSales } from './agent.mjs';
 import { runDesignJob } from './designer.mjs';
+import { runKickoff, runStandup, runRetro, maintenance } from './pm.mjs';
 import { enqueueAgent } from './actions.mjs';
 import { BudgetError, MissingKeyError, RefusalError } from './claude.mjs';
 
@@ -12,6 +13,9 @@ const HANDLERS = {
   agent: (ctx, p) => runAccountManager(ctx, p),
   design: (ctx, p) => runDesignJob(ctx, p),
   sales: (ctx, p) => runSales(ctx, p),
+  kickoff: (ctx, p) => runKickoff(ctx, p),
+  standup: (ctx) => runStandup(ctx),
+  retro: (ctx, p) => runRetro(ctx, p),
 };
 
 export function nextJob(store, now = Date.now()) {
@@ -55,8 +59,14 @@ export function startScheduler(ctx, { intervalMs = 3000 } = {}) {
   for (const j of store.find('jobs', (j) => j.status === 'running')) store.update('jobs', j.id, { status: 'queued', attempts: j.attempts - 1 });
 
   let busy = false;
+  let lastMaintenance = 0;
   const tick = async () => {
     if (busy || store.settings.paused || !store.settings.apiKey) return;
+    // 1분마다 일정 지연 · 연체 · 스탠드업 시간을 점검합니다(Claude 호출 없음).
+    if (Date.now() - lastMaintenance > 60e3) {
+      lastMaintenance = Date.now();
+      try { maintenance(store); } catch (err) { store.log('error', `정기 점검 실패: ${err.message}`); }
+    }
     const job = nextJob(store);
     if (!job) return;
     busy = true;

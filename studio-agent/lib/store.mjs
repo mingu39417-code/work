@@ -7,10 +7,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { Vault } from './vault.mjs';
+import { defaultStaff } from './staff.mjs';
+import { DEFAULT_CONTRACT } from './contract.mjs';
 
 export const COLLECTIONS = [
   'clients', 'projects', 'messages', 'designs', 'quotes', 'invoices',
   'approvals', 'jobs', 'activity', 'leads', 'alerts', 'usage', 'accounts', 'lessons',
+  'staff', 'reports', 'contracts',
 ];
 
 const ACTIVITY_LIMIT = 3000;
@@ -69,7 +72,13 @@ export function defaultSettings() {
       invoice: 'auto',
       outreach: 'approve',
     },
-    design: { selfReview: true },
+    design: { selfReview: true, maxReworks: 2 },
+    company: {
+      requireContract: true,
+      contractTemplate: DEFAULT_CONTRACT,
+      standupHour: 9,
+      overdueReminderDays: 3,
+    },
     auth: { passwordHash: '' },
   };
 }
@@ -100,6 +109,11 @@ export class Store extends EventEmitter {
     fs.mkdirSync(this.uploadsDir, { recursive: true });
     this.vault = new Vault(dir);
     this.load();
+    // 처음 실행하면 기본 직원들을 채용합니다.
+    if (!this.data.staff.length) {
+      this.data.staff = defaultStaff().map((x) => ({ ...x, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+      this.save();
+    }
   }
 
   load() {

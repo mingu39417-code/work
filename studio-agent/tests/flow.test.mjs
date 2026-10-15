@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { makeCtx, msg, toolUse, text, json, SVG } from './helpers.mjs';
 import { nextJob, runJob } from '../lib/scheduler.mjs';
 import {
-  createInquiry, acceptQuoteByClient, approveDesignByClient, markInvoicePaid, canDownload, postMessage, enqueueAgent,
+  createInquiry, acceptQuoteByClient, signContractByClient, workAllowed, approveDesignByClient, markInvoicePaid, canDownload, postMessage, enqueueAgent,
 } from '../lib/actions.mjs';
 
 async function drain(ctx) {
@@ -29,6 +29,10 @@ function account(body) {
     ]);
   }
   if (c.includes('accepted the quote')) {
+    // 계약서 서명 전에는 청구할 수 없음 — 코드가 막는지 확인
+    return msg([toolUse('send_invoice', { kind: 'deposit', amount: 250000, description: '계약금 50%', due_days: 3, message: '계약금' }), toolUse('reply_to_client', { message: '계약서 확인 부탁드립니다.' })]);
+  }
+  if (c.includes('signed the service contract')) {
     return msg([toolUse('send_invoice', { kind: 'deposit', amount: 250000, description: '계약금 50%', due_days: 3, message: '계약금 청구서입니다.' })]);
   }
   if (c.includes('confirmed payment') && c.includes('(deposit')) {
@@ -55,8 +59,11 @@ function respond(body, kind, i) {
       { name: '라인 아트', idea: '단선 일러스트', palette: ['#222'], typography: '세리프', layout: '좌측', format: 'svg' },
     ] });
   }
-  if (kind === 'make') return json({ title: `시안 ${i + 1}`, rationale: '설명', format: 'svg', code: SVG });
-  if (kind === 'review') return json({ score: i === 0 ? 9 : 6, summary: '좋음', issues: [], revised_code: i === 0 ? '' : SVG.replace('Logo', 'Logo v2') });
+  // 시안 1은 바로 통과, 시안 2는 AD가 한 번 반려 → 디자이너가 고쳐서 통과
+  if (kind === 'make') return json({ title: `시안 ${Math.min(i, 1) + 1}`, rationale: '설명', format: 'svg', code: i === 2 ? SVG.replace('Logo', 'Logo v2') : SVG });
+  if (kind === 'review') return json([{ score: 9, summary: '좋음', issues: [], decision: 'approve' }, { score: 6, summary: '글자 작음', issues: ['글자를 키울 것'], decision: 'rework' }, { score: 8, summary: '좋아짐', issues: [], decision: 'approve' }][i]);
+  if (kind === 'kickoff') return json({ milestones: [{ title: '1차 시안', owner: 'designer', due: '2099-01-10' }, { title: '시안 공유', owner: 'am', due: '2099-01-11' }, { title: '잔금', owner: 'finance', due: '2099-01-20' }], risks: ['피드백 지연'], kickoff_note: '시작합니다' });
+  if (kind === 'retro') return json({ went_well: ['빠른 응대'], to_improve: ['일정 공유'], proposed_rules: [{ text: '킥오프 일정은 첫 답장에 같이 안내', scope: 'account' }] });
   throw new Error(`예상치 못한 호출: ${kind}`);
 }
 
@@ -84,6 +91,15 @@ test('문의부터 정산까지 전체 흐름', async () => {
 
   await acceptQuoteByClient(ctx, p, quote.id);
   await drain(ctx);
+  assert.equal(store.find('invoices', () => true).length, 0, '계약서 서명 전 청구 차단');
+  const contract = store.findOne('contracts', (c) => c.projectId === p.id);
+  assert.equal(contract.status, 'sent');
+  assert.match(contract.body, /디자인 용역 계약서/);
+  assert.match(contract.body, /₩500,000/);
+  assert.equal(workAllowed(store, store.get('projects', p.id)) !== null, true);
+  assert.equal(await signContractByClient(ctx, p, contract.id, ''), false, '이름 없이는 서명 불가');
+  assert.equal(await signContractByClient(ctx, p, contract.id, '김사장'), true);
+  await drain(ctx);
   const deposit = store.findOne('invoices', (i) => i.projectId === p.id && i.kind === 'deposit');
   assert.equal(deposit.amount, 250000);
   assert.equal(store.get('projects', p.id).status, 'accepted');
@@ -97,10 +113,18 @@ test('문의부터 정산까지 전체 흐름', async () => {
   assert.equal(p.designRounds, 1);
   assert.ok(designs.every((d) => d.shared));
   assert.equal(p.status, 'review');
-  // 검토 점수가 낮은 두 번째 시안은 수정본으로 바뀝니다
+  // 킥오프: 일정 · 담당 디자이너
+  assert.equal(p.plan.milestones.length, 3);
+  assert.ok(p.designerId);
+  assert.equal(designs[0].designerId, p.designerId);
+  // AD가 반려한 두 번째 시안은 재작업본으로 바뀝니다
   assert.match(designs[1].code, /Logo v2/);
-  assert.equal(designs[1].review.revised, true);
-  assert.equal(designs[0].review.revised, undefined);
+  assert.equal(designs[1].reworks, 1);
+  assert.equal(designs[0].reworks, 0);
+  const staffMsgs = store.find('messages', (m) => m.projectId === p.id && m.from === 'staff');
+  assert.ok(staffMsgs.some((m) => /\[킥오프\]/.test(m.text)));
+  assert.ok(staffMsgs.some((m) => /\[반려\]/.test(m.text)));
+  assert.ok(p.plan.milestones[0].done, '디자인 라운드 후 마일스톤 완료');
 
   await approveDesignByClient(ctx, p, designs[0].id);
   await drain(ctx);
@@ -116,8 +140,13 @@ test('문의부터 정산까지 전체 흐름', async () => {
   assert.equal(p.status, 'completed');
   assert.equal(canDownload(store, p), true);
 
-  // 비용이 기록됩니다
+  // 정산 후 PM 회고 → 학습 노트 제안
+  const retro = store.findOne('reports', (r) => r.kind === 'retro');
+  assert.equal(retro.proposals[0].status, 'pending');
+
+  // 비용이 직원별로 기록됩니다
   assert.ok(store.all('usage').length > 5);
+  assert.ok(store.all('usage').every((u) => u.staffId));
   assert.ok(ctx.llm.spentToday() > 0);
 });
 

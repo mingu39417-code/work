@@ -53,7 +53,7 @@ test('계약금 확인 전에는 디자인을 시작할 수 없습니다', async
 
 test('수정 횟수를 다 쓰면 추가 수정 청구를 안내합니다', async () => {
   const s = scripted([toolUse('start_design_round', { instructions: '또 수정', concepts: 1 })]);
-  const { ctx } = makeCtx(s.respond, { policy: { requireDeposit: false } });
+  const { ctx } = makeCtx(s.respond, { policy: { requireDeposit: false }, company: { requireContract: false } });
   const { store } = ctx;
   const p = await createInquiry(ctx, { name: 'A', email: 'a@x.kr', description: '로고 문의' });
   const q = store.insert('quotes', { projectId: p.id, items: [], total: 500000, revisions: 1, status: 'sent' });

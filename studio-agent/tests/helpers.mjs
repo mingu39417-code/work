@@ -29,7 +29,10 @@ export function kindOf(body) {
   const props = Object.keys(body.output_config?.format?.schema?.properties ?? {});
   if (props.includes('directions')) return 'directions';
   if (props.includes('code')) return 'make';
-  if (props.includes('revised_code')) return 'review';
+  if (props.includes('decision')) return 'review';
+  if (props.includes('milestones')) return 'kickoff';
+  if (props.includes('went_well')) return 'retro';
+  if (/project manager/.test(body.system?.[0]?.text ?? '')) return 'standup';
   return 'unknown';
 }
 

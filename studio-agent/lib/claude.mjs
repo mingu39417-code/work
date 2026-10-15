@@ -93,6 +93,7 @@ export function createLLM(store, { factory } = {}) {
       model,
       projectId: meta.projectId ?? null,
       leadId: meta.leadId ?? null,
+      staffId: meta.staffId ?? null,
       inputTokens: msg.usage?.input_tokens ?? 0,
       outputTokens: msg.usage?.output_tokens ?? 0,
       cacheRead: msg.usage?.cache_read_input_tokens ?? 0,

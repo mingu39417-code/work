@@ -1,12 +1,14 @@
-// 디자이너 — 실제 시안 파일(SVG/HTML)을 만듭니다.
-// 1) 방향 잡기: 시안 수만큼 서로 다른 콘셉트를 정합니다(수정 라운드는 고객이 고른 안을 다듬음).
-// 2) 제작: 콘셉트마다 완성된 파일을 코드로 그립니다.
-// 3) 아트디렉터 검토: 브리프와 대조해 점수를 매기고, 부족하면 고친 버전으로 바꿉니다.
-// 끝나면 계정 관리자에게 designs_ready 이벤트를 넘겨 고객에게 보여 주게 합니다.
+// 디자인팀 — 실제 시안 파일(SVG/HTML)을 만듭니다.
+// 1) 아트 디렉터: 시안 수만큼 서로 다른 크리에이티브 방향을 정합니다(수정 라운드는 고객이 고른 안을 다듬음).
+// 2) 디자이너: 방향마다 완성된 파일을 코드로 그립니다.
+// 3) 아트 디렉터 검수: 기준(8점) 미달이면 구체적인 피드백과 함께 반려 → 디자이너가 다시 (최대 N회).
+// 오가는 대화는 사내 채널(대표만 보임)에 남고, 끝나면 AM에게 designs_ready를 넘겨 고객에게 보여 줍니다.
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { enqueueAgent, short } from './actions.mjs';
+import { enqueueAgent, short, postMessage } from './actions.mjs';
+import { lead, pickDesigner, modelFor, staffBlock } from './staff.mjs';
+import { completeMilestones } from './pm.mjs';
 import { designerSystem } from './prompts.mjs';
 import { jsonOf } from './claude.mjs';
 
@@ -54,9 +56,9 @@ const REVIEW_SCHEMA = {
     score: { type: 'integer' },
     summary: { type: 'string' },
     issues: { type: 'array', items: { type: 'string' } },
-    revised_code: { type: 'string' },
+    decision: { type: 'string', enum: ['approve', 'rework'] },
   },
-  required: ['score', 'summary', 'issues', 'revised_code'],
+  required: ['score', 'summary', 'issues', 'decision'],
   additionalProperties: false,
 };
 
@@ -119,87 +121,110 @@ export async function runDesignJob(ctx, job) {
   const project = store.get('projects', job.projectId);
   if (!project) return;
   const round = (project.designRounds ?? 0) + 1;
-  const meta = { projectId: project.id };
-  const system = [{ type: 'text', text: designerSystem(s, store.all('lessons')), cache_control: { type: 'ephemeral' } }];
+  const ad = lead(store, 'ad');
+  const designer = pickDesigner(store, project);
+  if (designer && project.designerId !== designer.id) store.update('projects', project.id, { designerId: designer.id });
+  const lessons = store.all('lessons');
+  const sys = (st) => [{ type: 'text', text: designerSystem(s, lessons) + staffBlock(st), cache_control: { type: 'ephemeral' } }];
   const brief = briefText(store, project, job);
   const images = imageBlocks(store, project);
   const base = baseDesignsText(store, job.baseDesignIds ?? []);
-  const common = { model: s.model, system, output_config: { effort: s.designEffort } };
+  const effort = { effort: s.designEffort };
+  const say = (st, text) => postMessage(ctx, store.get('projects', project.id), { from: 'staff', staffId: st?.id ?? null, internal: true, text });
 
-  store.log('design', `디자인 ${round}차 시작 — 방향 설정 (${job.concepts}안) — ${project.title}`, meta);
+  store.log('design', `${ad?.name ?? 'AD'}: 디자인 ${round}차 방향 설정 (${job.concepts}안, 담당 ${designer?.name ?? '-'}) — ${project.title}`, { projectId: project.id });
 
-  // 1) 방향
+  // 1) 아트 디렉터 — 크리에이티브 방향
   const dirMsg = await llm.stream({
-    ...common,
+    model: modelFor(store, ad),
+    system: sys(ad),
     max_tokens: 16000,
-    output_config: { ...common.output_config, format: { type: 'json_schema', schema: DIRECTIONS_SCHEMA } },
+    output_config: { ...effort, format: { type: 'json_schema', schema: DIRECTIONS_SCHEMA } },
     messages: [{
       role: 'user',
       content: [
         ...images,
-        { type: 'text', text: `${brief}\n\n${base ? `${base}\n\n` : ''}Plan exactly ${job.concepts} design direction(s) for this round. ${base ? 'This is a revision: directions must evolve the base design(s) as instructed, not start over.' : 'Make them meaningfully different from each other.'} Pick "svg" or "html" for each based on the deliverable.` },
+        { type: 'text', text: `${brief}\n\n${base ? `${base}\n\n` : ''}As art director, plan exactly ${job.concepts} design direction(s) for this round for ${designer?.name ?? 'the designer'} to execute. ${base ? 'This is a revision: directions must evolve the base design(s) as instructed, not start over.' : 'Make them meaningfully different from each other.'} Pick "svg" or "html" for each based on the deliverable.` },
       ],
     }],
-  }, 'design_direction', meta);
+  }, 'design_direction', { projectId: project.id, staffId: ad?.id });
   const directions = jsonOf(dirMsg).directions.slice(0, job.concepts);
+  await say(ad, `[${round}차 크리에이티브 방향] ${designer?.name ?? '디자이너'}님 부탁해요.\n${directions.map((d, i) => `${i + 1}. ${d.name} — ${d.idea}`).join('\n')}`);
 
   const created = [];
   for (const [i, dir] of directions.entries()) {
-    store.log('design', `${round}차 시안 ${i + 1}/${directions.length} 제작 중: ${dir.name}`, meta);
+    let feedback = '';
+    let best = null;
+    const maxReworks = s.design.selfReview ? Math.max(0, Number(s.design.maxReworks ?? 2)) : 0;
+    for (let attempt = 0; attempt <= maxReworks; attempt++) {
+      store.log('design', `${designer?.name ?? '디자이너'}: ${round}차 시안 ${i + 1}/${directions.length} 「${dir.name}」 ${attempt ? `재작업 ${attempt}회차` : '제작'}`, { projectId: project.id });
 
-    // 2) 제작
-    const makeMsg = await llm.stream({
-      ...common,
-      max_tokens: 64000,
-      output_config: { ...common.output_config, format: { type: 'json_schema', schema: DESIGN_SCHEMA } },
-      messages: [{
-        role: 'user',
-        content: [
-          ...images,
-          { type: 'text', text: `${brief}\n\n${base ? `${base}\n\n` : ''}# Direction to execute\n${JSON.stringify(dir, null, 1)}\n\nProduce the finished design file now. "code" is the complete ${dir.format.toUpperCase()} document. "rationale" is 2-3 sentences in the client's language explaining the idea. "title" is a short concept name in the client's language.` },
-        ],
-      }],
-    }, 'design_make', meta);
-    let design = jsonOf(makeMsg);
-    if (!looksValid(design.format, design.code)) throw new Error(`시안 "${dir.name}"의 ${design.format} 코드가 올바르지 않습니다`);
-
-    // 3) 검토
-    let review = null;
-    if (s.design.selfReview) {
-      const revMsg = await llm.stream({
-        ...common,
+      // 2) 디자이너 — 제작 (반려되면 AD 피드백을 반영해 다시)
+      const makeMsg = await llm.stream({
+        model: modelFor(store, designer),
+        system: sys(designer),
         max_tokens: 64000,
-        output_config: { ...common.output_config, format: { type: 'json_schema', schema: REVIEW_SCHEMA } },
+        output_config: { ...effort, format: { type: 'json_schema', schema: DESIGN_SCHEMA } },
         messages: [{
           role: 'user',
-          content: `You are now the studio's art director reviewing a designer's file before the client sees it.\n\n${brief}\n\n# Direction\n${JSON.stringify(dir)}\n\n# File (${design.format})\n\`\`\`\n${design.code}\n\`\`\`\n\nCheck: brief fit, hierarchy, typography, spacing/alignment, color, legibility, text overflow/clipping, correct copy and spelling, technical validity (well-formed, self-contained, viewBox/size). Score 1-10. "summary" is one sentence in Korean for the owner. If the score is below 8, put a fully corrected complete file in "revised_code"; otherwise set "revised_code" to an empty string.`,
+          content: [
+            ...images,
+            { type: 'text', text: `${brief}\n\n${base ? `${base}\n\n` : ''}# Direction from the art director\n${JSON.stringify(dir, null, 1)}${feedback ? `\n\n# The art director sent your previous version back. Fix every point:\n${feedback}\n\n# Your previous version\n\`\`\`\n${best.code.slice(0, MAX_CODE_IN_CONTEXT)}\n\`\`\`` : ''}\n\nProduce the finished design file now. "code" is the complete ${dir.format.toUpperCase()} document. "rationale" is 2-3 sentences in the client's language explaining the idea. "title" is a short concept name in the client's language.` },
+          ],
         }],
-      }, 'design_review', meta);
-      const r = jsonOf(revMsg);
-      review = { score: r.score, summary: r.summary, issues: r.issues };
-      if (r.revised_code && looksValid(design.format, r.revised_code)) {
-        design = { ...design, code: r.revised_code };
-        review.revised = true;
+      }, 'design_make', { projectId: project.id, staffId: designer?.id });
+      const design = jsonOf(makeMsg);
+      if (!looksValid(design.format, design.code)) throw new Error(`시안 "${dir.name}"의 ${design.format} 코드가 올바르지 않습니다`);
+
+      if (!s.design.selfReview) {
+        best = { ...design, review: null, reworks: attempt };
+        break;
       }
+
+      // 3) 아트 디렉터 — 내부 검수 (승인 또는 반려)
+      const revMsg = await llm.stream({
+        model: modelFor(store, ad),
+        system: sys(ad),
+        max_tokens: 8000,
+        output_config: { ...effort, format: { type: 'json_schema', schema: REVIEW_SCHEMA } },
+        messages: [{
+          role: 'user',
+          content: `As art director, review ${designer?.name ?? 'the designer'}'s file before the client sees it.\n\n${brief}\n\n# Direction\n${JSON.stringify(dir)}\n\n# File (${design.format})\n\`\`\`\n${design.code}\n\`\`\`\n\nCheck: brief fit, hierarchy, typography, spacing/alignment, color, legibility, text overflow/clipping, correct copy and spelling, technical validity (well-formed, self-contained, viewBox/size). Score 1-10. "decision" is "approve" if it is good enough to show the client (score 8+), otherwise "rework". "issues" are specific, actionable fixes for the designer (Korean). "summary" is one Korean sentence for the owner.`,
+        }],
+      }, 'design_review', { projectId: project.id, staffId: ad?.id });
+      const r = jsonOf(revMsg);
+      const candidate = { ...design, review: { score: r.score, summary: r.summary, issues: r.issues }, reworks: attempt };
+      if (!best || (best.review?.score ?? 0) <= r.score) best = candidate;
+      if (r.decision === 'approve') {
+        await say(ad, `[검수 통과] 「${design.title}」 ${r.score}/10 — ${r.summary}`);
+        break;
+      }
+      feedback = r.issues.map((x) => `- ${x}`).join('\n');
+      if (attempt < maxReworks) await say(ad, `[반려] 「${design.title}」 ${r.score}/10 — ${designer?.name ?? '디자이너'}님 수정 부탁해요:\n${feedback}`);
+      else await say(ad, `[검수] 재작업 ${maxReworks}회 후에도 기준 미달(${r.score}/10). 가장 나은 버전으로 진행합니다 — 대표님 확인 권장.`);
     }
 
     const row = store.insert('designs', {
       projectId: project.id,
       round,
-      title: design.title,
-      rationale: design.rationale,
-      format: design.format,
-      code: design.code,
+      title: best.title,
+      rationale: best.rationale,
+      format: best.format,
+      code: best.code,
       direction: dir,
-      review,
+      review: best.review,
+      reworks: best.reworks,
+      designerId: designer?.id ?? null,
+      reviewerId: ad?.id ?? null,
       shared: false,
       approved: false,
       baseDesignIds: job.baseDesignIds ?? [],
     });
     created.push(row.id);
-    store.log('design', `시안 완성: ${design.title}${review ? ` (검토 ${review.score}/10${review.revised ? ', 수정 반영' : ''})` : ''} — ${short(project.title, 40)}`, meta);
+    store.log('design', `시안 완성: ${best.title}${best.review ? ` (AD 검수 ${best.review.score}/10, 재작업 ${best.reworks}회)` : ''} — ${short(project.title, 40)}`, { projectId: project.id });
   }
 
   store.update('projects', project.id, { designRounds: round });
+  completeMilestones(store, store.get('projects', project.id), ['designer', 'ad']);
   enqueueAgent(store, project.id, { kind: 'designs_ready', designIds: created });
 }

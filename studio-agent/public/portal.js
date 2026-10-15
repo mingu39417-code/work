@@ -29,6 +29,18 @@
     </div>`;
   }
 
+  function contractCard(c) {
+    const signed = c.status === 'signed';
+    return `<div class="card doc stack">
+      <h3>용역 계약서 ${signed ? `<span class="badge ok">서명 완료 · ${esc(c.signerName)} · ${esc((c.signedAt ?? '').slice(0, 10))}</span>` : '<span class="badge warn">서명 필요</span>'}</h3>
+      <details ${signed ? '' : 'open'}><summary>계약서 전문 보기</summary><div class="pre" style="max-height:340px;overflow:auto;font-size:0.88rem;padding:10px;border:1px solid var(--line);border-radius:8px;margin-top:8px">${esc(c.body)}</div></details>
+      ${signed ? '' : `<form data-sign="${c.id}" class="stack">
+        <label class="switch"><input type="checkbox" name="agree"> 위 계약 내용을 확인했고 동의합니다</label>
+        <div class="row" style="align-items:flex-end"><div><label>서명 (계약자 이름)</label><input name="name" autocomplete="name" placeholder="홍길동"></div><div style="flex:0 0 auto"><button class="btn primary">동의하고 서명</button></div></div>
+      </form>`}
+    </div>`;
+  }
+
   function invoiceCard(i) {
     const cur = state.studio.currency;
     const badge = i.status === 'paid' ? '<span class="badge ok">입금 확인</span>' : i.clientNotified ? '<span class="badge warn">확인 중</span>' : '<span class="badge bad">미결제</span>';
@@ -42,7 +54,7 @@
 
   function bubble(m) {
     const cls = m.from === 'client' ? 'me' : m.from === 'system' ? 'system' : 'them';
-    const who = m.from === 'client' ? '나' : m.from === 'system' ? '' : state.studio.studioName;
+    const who = m.from === 'client' ? '나' : m.from === 'system' ? '' : m.who ? `${state.studio.studioName} · ${m.who}` : state.studio.studioName;
     const imgs = (m.attachments ?? []).map((a) => `<img class="attach" src="${base}/uploads/${a.file}" alt="${esc(a.name)}">`).join('');
     const refs = (m.designIds?.length ? ` · 시안 ${m.designIds.length}개` : '') + (m.quoteId ? ' · 견적서' : '') + (m.invoiceId ? ' · 청구서' : '');
     return `<div class="bubble ${cls}">${cls !== 'system' ? `<span class="meta">${esc(who)} · ${when(m.at)}${refs}</span>` : ''}${esc(m.text)}${imgs}</div>`;
@@ -55,8 +67,10 @@
     $('#status').textContent = state.project.statusLabel;
     $('#ai-notice').textContent = state.studio.aiNotice;
     $('#sim-banner').classList.toggle('hidden', !state.simulation);
-    const docs = [...state.quotes.filter((q) => q.status !== 'superseded').map(quoteCard), ...state.invoices.map(invoiceCard)];
-    $('#docs').innerHTML = docs.join('');
+    const docs = [...state.quotes.filter((q) => q.status !== 'superseded').map(quoteCard), ...(state.contract ? [contractCard(state.contract)] : []), ...state.invoices.map(invoiceCard)];
+    // 서명 칸을 작성 중이면 지우지 않도록 다시 그리지 않습니다.
+    const typing = $$('#docs [data-sign] input').some((i) => (i.type === 'checkbox' ? i.checked : i.value) || i === document.activeElement);
+    if (!typing) $('#docs').innerHTML = docs.join('');
     $('#designs-wrap').classList.toggle('hidden', !state.designs.length);
     // iframe은 새로 그리면 깜빡이므로 시안 목록이 바뀔 때만 다시 그립니다.
     const sig = JSON.stringify(state.designs) + state.canDownload + state.project.status;
@@ -96,6 +110,20 @@
     if (t.dataset.accept && confirm('이 견적으로 진행할까요?')) act(`${base}/quotes/${t.dataset.accept}/accept`, '견적을 수락했습니다');
     if (t.dataset.approve && confirm('이 시안으로 최종 확정할까요?')) act(`${base}/designs/${t.dataset.approve}/approve`, '최종 시안을 확정했습니다');
     if (t.dataset.paid && confirm('입금을 마치셨나요? 확인 후 진행됩니다.')) act(`${base}/invoices/${t.dataset.paid}/paid`, '알려 주셔서 감사합니다');
+  });
+
+  document.addEventListener('submit', async (e) => {
+    const f = e.target.closest('[data-sign]');
+    if (!f) return;
+    e.preventDefault();
+    const name = f.name.value.trim();
+    if (!f.agree.checked) return toast('계약 내용 동의에 체크해 주세요');
+    if (name.length < 2) return toast('서명할 이름을 입력해 주세요');
+    try {
+      await api(`${base}/contracts/${f.dataset.sign}/sign`, { method: 'POST', body: { agree: true, name } });
+      toast('계약이 체결되었습니다');
+      await load();
+    } catch (err) { toast(err.message); }
   });
 
   $('#images').addEventListener('change', () => {

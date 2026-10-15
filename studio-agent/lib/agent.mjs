@@ -5,10 +5,11 @@
 import {
   STATUSES, money, gated, enqueue, postMessage, validateQuote, validateInvoice,
   workAllowed, roundLimit, acceptedQuote, invoiceRemaining, short, studioName,
-  completeProject, outreachBlocked, OUTREACH_BASIS,
+  completeProject, outreachBlocked, OUTREACH_BASIS, contractOf,
 } from './actions.mjs';
 import { accountManagerSystem, salesSystem } from './prompts.mjs';
 import { textOf } from './claude.mjs';
+import { lead as leadStaff, modelFor, staffBlock, staffLabel } from './staff.mjs';
 
 const MAX_STEPS = 12;
 
@@ -202,7 +203,9 @@ async function runAccountTool(ctx, project, name, input) {
       const running = store.findOne('jobs', (j) => j.kind === 'design' && j.payload.projectId === cur.id && ['queued', 'running'].includes(j.status));
       if (running) return '이미 진행 중인 디자인 작업이 있습니다. designs_ready를 기다리세요.';
       const concepts = Math.min(3, Math.max(1, Math.round(Number(input.concepts) || 1)));
-      enqueue(store, 'design', { projectId: cur.id, instructions: input.instructions, concepts, baseDesignIds: input.base_design_ids ?? [] });
+      // 킥오프 전이면 PM이 먼저 일정을 잡고 디자이너를 배정합니다(디자인 작업은 그다음에 실행).
+      if (!cur.plan && !cur.simulation) enqueue(store, 'kickoff', { projectId: cur.id }, { dedupe: `kickoff:${cur.id}` });
+      enqueue(store, 'design', { projectId: cur.id, instructions: input.instructions, concepts, baseDesignIds: input.base_design_ids ?? [] }, { delayMs: 1000 });
       if (cur.status !== 'in_progress' && cur.status !== 'revision') {
         store.update('projects', cur.id, { status: cur.designRounds > 0 ? 'revision' : 'in_progress' });
       }
@@ -243,7 +246,11 @@ function describeEvent(store, e) {
   switch (e.kind) {
     case 'new_inquiry': return 'A new inquiry arrived. Reply (clarify or quote) and record the brief.';
     case 'client_message': return 'The client sent new message(s). Respond.';
-    case 'quote_accepted': return 'The client accepted the quote. Next step per policy (deposit invoice, or start work).';
+    case 'quote_accepted': return store.settings.company.requireContract ? 'The client accepted the quote. The system sent them the service contract to sign in their portal. Thank them briefly and tell them to review and sign the contract; the deposit invoice comes after signing. Do not send an invoice yet.' : 'The client accepted the quote. Next step per policy (deposit invoice, or start work).';
+    case 'contract_signed': return 'The client signed the service contract. Next step per policy: send the deposit invoice (or, if no deposit is required, start work).';
+    case 'kickoff_done': return `The PM finished the kickoff and the schedule below is set. Share the key milestones and the expected first-concept date with the client in a short message.`;
+    case 'invoice_overdue': return `Finance flagged invoice ${e.invoiceId} as overdue (due ${e.dueDate}). Send a short, polite payment reminder. Do not threaten; offer help if there is a problem.`;
+    case 'milestone_overdue': return `The PM flagged milestone "${e.title}" as overdue (due ${e.due}). Decide what to do: if it is waiting on the client, gently ask them; if on the studio, apologize briefly with a new date and tell the owner via escalate_to_owner.`;
     case 'payment_received': {
       const inv = store.get('invoices', e.invoiceId);
       return `The owner confirmed payment of invoice ${e.invoiceId} (${inv?.kind}, ${inv?.amount}). Thank the client briefly and continue (e.g. start the design round after a deposit).`;
@@ -272,9 +279,10 @@ export function buildProjectContext(store, project, events) {
   const others = store.find('projects', (x) => x.clientId === client.id && x.id !== project.id);
   const aq = acceptedQuote(store, project);
 
-  const who = { client: 'CLIENT', agent: 'YOU', owner: 'OWNER', system: 'SYSTEM' };
+  const who = { client: 'CLIENT', agent: 'YOU', owner: 'OWNER', system: 'SYSTEM', staff: 'STAFF' };
   const thread = msgs.map((m) => {
-    const tag = m.internal ? `${who[m.from]} (internal, client cannot see)` : who[m.from];
+    const sender = m.from === 'staff' ? staffLabel(store.get('staff', m.staffId)) : who[m.from];
+    const tag = m.internal ? `${sender} (internal, client cannot see)` : sender;
     const extra = [
       m.quoteId && `[quote ${m.quoteId}]`,
       m.invoiceId && `[invoice ${m.invoiceId}]`,
@@ -298,6 +306,11 @@ ${events.map((e) => `- ${describeEvent(store, e)}`).join('\n')}
 - Design rounds used: ${project.designRounds ?? 0} of ${roundLimit(store, project)} allowed
 - Work allowed now: ${workAllowed(store, project) ?? 'yes'}
 - Accepted quote: ${aq ? `${aq.id} total ${aq.total}, ${aq.revisions} revisions, ${aq.timelineDays} days. Remaining billable: ${invoiceRemaining(store, project)}` : 'none'}
+- Contract: ${(() => { const c = contractOf(store, project); return c ? `${c.status}${c.signedAt ? ` (signed ${c.signedAt.slice(0, 10)} by ${c.signerName})` : ''}` : (store.settings.company.requireContract && !project.simulation ? 'not created yet (created automatically when the client accepts a quote)' : 'not required'); })()}
+- Team: AM ${staffLabel(leadStaff(store, 'am'))}; designer ${project.designerId ? staffLabel(store.get('staff', project.designerId)) : '(assigned at kickoff)'}
+
+# Schedule (set by the PM)
+${(project.plan?.milestones ?? []).map((m) => `- ${m.due} ${m.title} [${m.owner}] ${m.done ? 'DONE' : ''}`).join('\n') || '(no schedule yet)'}
 
 # Client
 - ${client.name}${client.company ? ` (${client.company})` : ''}, ${client.email || 'no email'}
@@ -321,14 +334,14 @@ ${thread || '(empty)'}`;
 }
 
 // ── 실행 루프 ──────────────────────────────────────────────────
-async function loop(ctx, { system, tools, context, purpose, meta, runTool }) {
+async function loop(ctx, { system, tools, context, purpose, meta, runTool, model }) {
   const { store, llm } = ctx;
   const s = store.settings;
   const messages = [{ role: 'user', content: context }];
   let note = '';
   for (let step = 0; step < MAX_STEPS; step++) {
     const res = await llm.create({
-      model: s.model,
+      model: model || s.model,
       max_tokens: 16000,
       system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
       tools,
@@ -374,16 +387,18 @@ export async function runAccountManager(ctx, { projectId, events }) {
     store.log('agent', `자동 응대 꺼짐 — 대표가 직접 처리: ${project.title}`, { projectId });
     return;
   }
-  store.log('agent', `에이전트 작업 시작 (${events.map((e) => e.kind).join(', ')}) — ${project.title}`, { projectId });
+  store.log('agent', `${staffLabel(leadStaff(store, 'am'))} 업무 시작 (${events.map((e) => e.kind).join(', ')}) — ${project.title}`, { projectId });
+  const am = leadStaff(store, 'am');
   const note = await loop(ctx, {
-    system: accountManagerSystem(store.settings, store.all('lessons')),
+    system: accountManagerSystem(store.settings, store.all('lessons')) + staffBlock(am),
     tools: ACCOUNT_TOOLS,
     context: buildProjectContext(store, project, events),
     purpose: 'account_manager',
-    meta: { projectId },
+    meta: { projectId, staffId: am?.id },
+    model: modelFor(store, am),
     runTool: (name, input) => runAccountTool(ctx, project, name, input),
   });
-  if (note) await postMessage(ctx, store.get('projects', projectId), { from: 'agent', internal: true, text: note });
+  if (note) await postMessage(ctx, store.get('projects', projectId), { from: 'agent', internal: true, text: note, staffId: am?.id });
   store.log('agent', `에이전트 작업 완료 — ${short(note || project.title)}`, { projectId });
 }
 
@@ -411,12 +426,14 @@ export async function runSales(ctx, { leadId, instruction }) {
 - Studio inquiry link: ${s.publicUrl.replace(/\/$/, '')}/
 ${instruction ? `\nOwner's instruction: ${instruction}` : ''}`;
   store.log('sales', `영업 메시지 작성 시작 — ${lead.company || lead.name}`, { leadId });
+  const am = leadStaff(store, 'am');
   const note = await loop(ctx, {
-    system: salesSystem(s, store.all('lessons')),
+    system: salesSystem(s, store.all('lessons')) + staffBlock(am),
     tools: SALES_TOOLS,
     context,
     purpose: 'sales',
-    meta: { leadId },
+    meta: { leadId, staffId: am?.id },
+    model: modelFor(store, am),
     runTool: async (name, input) => {
       if (name === 'draft_outreach') {
         return gated(ctx, 'outreach', { type: 'outreach', leadId, subject: input.subject, body: input.body }, `${lead.company || lead.name}: ${short(input.subject, 40)}`);
