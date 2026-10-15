@@ -7,7 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { Vault } from './vault.mjs';
-import { defaultStaff } from './staff.mjs';
+import { defaultStaff, normalizeStaff } from './staff.mjs';
 import { DEFAULT_CONTRACT } from './contract.mjs';
 
 export const COLLECTIONS = [
@@ -112,6 +112,10 @@ export class Store extends EventEmitter {
     // 처음 실행하면 기본 직원들을 채용합니다.
     if (!this.data.staff.length) {
       this.data.staff = defaultStaff().map((x) => ({ ...x, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }));
+      this.save();
+    }
+    if (this.data.staff.some((x) => !x.dept || !x.position)) {
+      this.data.staff = this.data.staff.map(normalizeStaff);
       this.save();
     }
   }

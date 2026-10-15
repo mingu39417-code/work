@@ -673,30 +673,50 @@
 
   // ── 조직 (직원) ──
   async function org() {
-    const list = await api('/api/staff');
-    const roles = [...new Set(list.map((x) => x.role))];
+    const [list, s] = await Promise.all([api('/api/staff'), api('/api/settings')]);
     const ROLE_LABEL = Object.fromEntries(list.map((x) => [x.role, x.roleLabel]));
+    const DEPTS = META.departments;
+    const posOpts = (cur) => META.positions.map((p) => `<option ${p === cur ? 'selected' : ''}>${p}</option>`).join('');
     const modelOpts = (cur) => `<option value="">회사 기본 (${esc(META.models[OV.agent.model] ?? OV.agent.model)})</option>${Object.entries(META.models).map(([k, v]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${esc(v)}</option>`).join('')}`;
+    const rank = (p) => { const i = META.positions.indexOf(p); return i < 0 ? 99 : i; };
     $('#view').innerHTML = `
-      <div class="page-head"><h1>조직</h1></div>
-      <p class="muted">회사의 각 직무를 맡은 AI 직원들입니다. 이름 · 업무 성향 · 사용 모델을 바꿀 수 있고, 디자이너는 더 채용할 수 있습니다(일이 가장 적은 디자이너에게 자동 배정). 고객에게는 이름과 함께 항상 'AI'로 표시됩니다.</p>
-      <div class="card" style="margin-bottom:16px"><h3>업무 흐름</h3><p class="pre" style="margin:0;font-size:0.92rem">문의 → AM 응대 · 견적 → 고객 견적 수락 → 계약서 서명 → 계약금 청구 · 입금(대표 확인)
-→ PM 킥오프(일정 · 디자이너 배정) → AD 크리에이티브 방향 → 디자이너 제작 → AD 검수(반려 시 재작업)
-→ AM 시안 제시 → 고객 피드백 → 수정 라운드 → 최종 확정 → 잔금 청구 → 입금 → 원본 납품 → PM 회고
-매일 아침 PM 스탠드업 보고 · 매시간 일정 지연 / 연체 점검(재무 → AM 독촉)</p></div>
-      ${roles.map((r) => `<h2 style="margin-top:18px">${esc(ROLE_LABEL[r])}</h2><div class="staff-grid">${list.filter((x) => x.role === r).map((x) => `
-        <form class="card stack" data-staff="${x.id}" style="${x.active === false ? 'opacity:.55' : ''}">
-          <div class="item-row"><input name="name" value="${esc(x.name)}" style="font-weight:600;max-width:140px"><span class="badge ${x.active === false ? '' : 'ok'}">${x.active === false ? '휴직' : '근무 중'}</span></div>
-          <small>${esc(x.duty)}</small>
+      <div class="page-head"><h1>조직도</h1></div>
+      ${Pixel.orgChart(list, s.profile.ownerName, META)}
+      <div class="card" style="margin-bottom:16px"><h3>업무 흐름</h3><p class="pre" style="margin:0;font-size:0.92rem">문의 → 영업팀 응대 · 견적 → 고객 견적 수락 → 계약서 서명 → 계약금 청구 · 입금(대표 확인)
+→ PM팀 킥오프(일정 · 디자이너 배정) → 크리에이티브 실장 방향 설정 → 디자이너 제작 → 실장 검수(반려 시 재작업)
+→ 영업팀 시안 제시 → 고객 피드백 → 수정 라운드 → 최종 확정 → 잔금 청구 → 입금 → 원본 납품 → PM팀 회고
+매일 아침 PM팀 스탠드업 보고 · 일정 지연 / 연체 점검(경영지원팀 → 영업팀 독촉)</p></div>
+      <p class="muted">직원은 모두 AI이며 고객에게는 이름과 함께 항상 'AI'로 표시됩니다. 같은 직무가 여럿이면 직책이 높은 사람이 대표로 맡고, 디자이너는 일이 가장 적은 사람에게 자동 배정됩니다.</p>
+      ${Object.entries(DEPTS).map(([key, d]) => {
+        const people = list.filter((x) => x.dept === key).sort((a, b) => rank(a.position) - rank(b.position));
+        if (!people.length) return '';
+        return `<h2 style="margin-top:22px;display:flex;align-items:center;gap:10px"><span style="width:14px;height:14px;background:${d.color};display:inline-block"></span>${esc(d.name)}</h2>
+        <div class="staff-grid">${people.map((x) => `
+        <form class="card stack" id="card-${x.id}" data-staff="${x.id}" style="${x.active === false ? 'opacity:.55' : ''}">
+          <div style="display:flex;gap:12px;align-items:center">
+            <canvas data-seed="${esc(x.id)}" data-shirt="${d.color}" data-position="${esc(x.position)}" data-inactive="${x.active === false ? 1 : ''}" data-scale="3" style="flex:none"></canvas>
+            <div style="flex:1;min-width:0" class="stack">
+              <div style="display:flex;gap:6px"><select name="position" style="width:auto">${posOpts(x.position)}</select><input name="name" value="${esc(x.name)}" style="font-weight:600"></div>
+              <div><span class="badge ${x.busy ? 'warn' : x.active === false ? '' : 'ok'}" style="white-space:normal;line-height:1.35">${x.busy ? `작업 중 · ${esc(x.busy)}` : x.active === false ? '휴직' : '근무 중'}</span></div>
+            </div>
+          </div>
+          <small><b>${esc(x.roleLabel)}</b> — ${esc(x.duty)}</small>
           <div><label>업무 성향</label><textarea name="persona" style="min-height:60px">${esc(x.persona)}</textarea></div>
           <div><label>모델</label><select name="model">${modelOpts(x.model)}</select></div>
-          <small>진행 ${x.stats.activeProjects}건${x.role === 'designer' ? ` · 시안 ${x.stats.designsMade}개 · AD 평균 ${x.stats.avgScore ?? '-'}점 · 반려 ${x.stats.reworks}회` : ''}${x.role === 'ad' ? ` · 검수 ${x.stats.designsReviewed}건` : ''} · 이번 달 비용 $${x.stats.costMonth.toFixed(2)}</small>
+          <small>진행 ${x.stats.activeProjects}건${x.role === 'designer' ? ` · 시안 ${x.stats.designsMade}개 · 실장 검수 평균 ${x.stats.avgScore ?? '-'}점 · 반려 ${x.stats.reworks}회` : ''}${x.role === 'ad' ? ` · 검수 ${x.stats.designsReviewed}건` : ''} · 이번 달 비용 $${x.stats.costMonth.toFixed(2)}</small>
           <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn small primary">저장</button><button type="button" class="btn small" data-toggle>${x.active === false ? '복직' : '휴직'}</button></div>
-        </form>`).join('')}</div>`).join('')}
-      <form class="card stack" id="hire" style="margin-top:18px"><h2>채용</h2>
-        <div class="row"><div><label>이름</label><input name="name" required></div><div><label>직무</label><select name="role">${Object.entries(ROLE_LABEL).map(([k, v]) => `<option value="${k}" ${k === 'designer' ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div><div><label>모델</label><select name="model">${modelOpts('')}</select></div></div>
+        </form>`).join('')}</div>`;
+      }).join('')}
+      <form class="card stack" id="hire" style="margin-top:22px"><h2>채용</h2>
+        <div class="row"><div><label>이름</label><input name="name" required></div><div><label>직무 (부서는 자동)</label><select name="role">${Object.entries(ROLE_LABEL).map(([k, v]) => `<option value="${k}" ${k === 'designer' ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div><div><label>직책</label><select name="position">${posOpts('사원')}</select></div><div><label>모델</label><select name="model">${modelOpts('')}</select></div></div>
         <div><label>업무 성향 · 전문 스타일</label><input name="persona" placeholder="예: 레트로 · 타이포 포스터 전문, 대담한 색 사용"></div>
         <div><button class="btn primary">채용</button></div></form>`;
+    Pixel.mount($('#view'));
+    $$('[data-goto]').forEach((b) => (b.onclick = () => {
+      const card = $(`#card-${b.dataset.goto}`);
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash');
+    }));
     $$('[data-staff]').forEach((f) => {
       f.onsubmit = async (e) => { e.preventDefault(); try { await api(`/api/staff/${f.dataset.staff}`, { method: 'PATCH', body: Object.fromEntries(new FormData(f)) }); toast('저장했습니다'); route(); } catch (err) { toast(err.message); } };
       f.querySelector('[data-toggle]').onclick = async (e) => { try { await api(`/api/staff/${f.dataset.staff}`, { method: 'PATCH', body: { active: e.target.textContent === '복직' } }); route(); } catch (err) { toast(err.message); } };

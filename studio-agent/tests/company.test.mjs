@@ -105,3 +105,21 @@ test('직원 API: 채용 · 수정, 직무에 마지막 한 명은 휴직 불가
   const fin = await (await api('/api/finance')).json();
   assert.equal(typeof fin.revenue, 'number');
 });
+
+test('부서 · 직책: 기본 배치, 직책이 높은 사람이 대표로 맡음, 작업 중 표시', async () => {
+  const { ctx } = makeCtx(() => msg([text('x')]));
+  const { store } = ctx;
+  const { lead, busyStaff } = await import('../lib/staff.mjs');
+  const byId = (id) => store.get('staff', id);
+  assert.equal(byId('stf_am').dept, 'sales');
+  assert.equal(byId('stf_ad').position, '실장');
+  assert.equal(byId('stf_ds1').position, '선임');
+  assert.equal(byId('stf_fin').dept, 'admin');
+  // 같은 직무에 팀장이 새로 오면 그 사람이 대표 담당
+  const newLead = store.insert('staff', { name: '새팀장', role: 'am', dept: 'sales', position: '실장', active: true });
+  assert.equal(lead(store, 'am').id, newLead.id);
+  const p = await createInquiry(ctx, { name: 'A', email: 'a@x.kr', description: '문의' });
+  store.update('projects', p.id, { designerId: 'stf_ds2' });
+  const busy = busyStaff(store, { kind: 'design', payload: { projectId: p.id } });
+  assert.ok(busy.stf_ds2 && busy.stf_ad);
+});

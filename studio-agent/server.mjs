@@ -19,7 +19,7 @@ import {
 } from './lib/actions.mjs';
 import { mailAccount, mailer, GMAIL, accountAuth } from './lib/mailer.mjs';
 import { startInboxPoller } from './lib/inbox.mjs';
-import { ROLES, staffLabel } from './lib/staff.mjs';
+import { ROLES, DEPARTMENTS, POSITIONS, deptOf, defaultPosition, busyStaff, staffLabel } from './lib/staff.mjs';
 import { financeSummary } from './lib/pm.mjs';
 import { DEFAULT_CONTRACT } from './lib/contract.mjs';
 import { ImapFlow } from 'imapflow';
@@ -49,7 +49,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(here, 'public');
 const MAX_BODY = 12 * 1024 * 1024;
 const IMAGE_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.woff2': 'font/woff2', '.md': 'text/plain; charset=utf-8' };
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -262,8 +262,9 @@ function projectDetail(store, p) {
 }
 
 // 직원별 성과 · 비용 (이번 달)
-function staffView(store) {
+function staffView(store, running) {
   const month = new Date().toISOString().slice(0, 7);
+  const busy = busyStaff(store, running);
   return store.all('staff').map((st) => {
     const usage = store.find('usage', (u) => u.staffId === st.id);
     const made = store.find('designs', (d) => d.designerId === st.id);
@@ -273,6 +274,8 @@ function staffView(store) {
     return {
       ...st,
       roleLabel: ROLES[st.role]?.label ?? st.role,
+      deptName: DEPARTMENTS[st.dept]?.name ?? '',
+      busy: busy[st.id] ?? null,
       duty: ROLES[st.role]?.duty ?? '',
       stats: {
         activeProjects: active.length,
@@ -483,7 +486,7 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       req.on('close', () => sseClients.delete(res));
       return;
     }
-    if (m === 'GET' && p === '/api/meta') return send(res, 200, { statuses: STATUSES, autonomy: AUTONOMY_LABELS, models: Object.fromEntries(Object.entries(MODELS).map(([k, v]) => [k, v.label])), outreachBasis: OUTREACH_BASIS });
+    if (m === 'GET' && p === '/api/meta') return send(res, 200, { statuses: STATUSES, autonomy: AUTONOMY_LABELS, models: Object.fromEntries(Object.entries(MODELS).map(([k, v]) => [k, v.label])), outreachBasis: OUTREACH_BASIS, departments: DEPARTMENTS, positions: POSITIONS });
     if (m === 'GET' && p === '/api/overview') return send(res, 200, overview(ctx));
 
     if (m === 'POST' && p === '/api/agent/pause') { store.updateSettings({ paused: true }); store.log('agent', '대표가 에이전트를 일시정지했습니다'); return send(res, 200, { ok: true }); }
@@ -744,13 +747,13 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
     }
 
     // 직원 (조직)
-    if (m === 'GET' && p === '/api/staff') return send(res, 200, staffView(store));
+    if (m === 'GET' && p === '/api/staff') return send(res, 200, staffView(store, ctx.running));
     if (m === 'POST' && p === '/api/staff') {
       const b = await readJson(req);
       if (!ROLES[b.role]) throw new HttpError(400, '직무를 선택하세요');
       if (!String(b.name ?? '').trim()) throw new HttpError(400, '이름을 입력하세요');
       if (b.model && !MODELS[b.model]) throw new HttpError(400, '지원하지 않는 모델');
-      const st = store.insert('staff', { name: String(b.name).trim().slice(0, 30), role: b.role, title: ROLES[b.role].label, persona: String(b.persona ?? '').slice(0, 500), model: b.model || '', active: true });
+      const st = store.insert('staff', { name: String(b.name).trim().slice(0, 30), role: b.role, title: ROLES[b.role].label, dept: deptOf(b.role), position: POSITIONS.includes(b.position) ? b.position : defaultPosition(b.role), persona: String(b.persona ?? '').slice(0, 500), model: b.model || '', active: true });
       store.log('hr', `채용: ${st.name} (${ROLES[st.role].label})`);
       return send(res, 200, st);
     }
@@ -761,6 +764,7 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       const patch = {};
       if (typeof b.name === 'string' && b.name.trim()) patch.name = b.name.trim().slice(0, 30);
       if (typeof b.persona === 'string') patch.persona = b.persona.slice(0, 500);
+      if (POSITIONS.includes(b.position)) patch.position = b.position;
       if (typeof b.model === 'string') { if (b.model && !MODELS[b.model]) throw new HttpError(400, '지원하지 않는 모델'); patch.model = b.model; }
       if (typeof b.active === 'boolean') {
         // 각 직무에 최소 한 명은 남아 있어야 회사가 돌아갑니다.
