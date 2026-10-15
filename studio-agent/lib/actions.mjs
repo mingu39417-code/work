@@ -4,7 +4,7 @@
 import { mailer } from './mailer.mjs';
 import crypto from 'node:crypto';
 import { renderContract } from './contract.mjs';
-import { lead as leadStaff } from './staff.mjs';
+import { assign, projectStaff } from './staff.mjs';
 
 export const STATUSES = {
   inquiry: '문의',
@@ -114,7 +114,7 @@ export async function postMessage(ctx, project, { from, text, internal = false, 
     attachments: attachments ?? [],
     emailId: emailId ?? null,
     // 고객 응대 메시지는 담당 AM 이름으로 기록됩니다.
-    staffId: staffId ?? (from === 'agent' ? leadStaff(store, 'am')?.id ?? null : null),
+    staffId: staffId ?? (from === 'agent' ? projectStaff(store, store.get('projects', project.id) ?? project, 'am')?.id ?? null : null),
   });
   store.update('projects', project.id, { lastMessageAt: msg.createdAt });
 
@@ -168,6 +168,9 @@ export async function createInquiry(ctx, input) {
     source: input.source ?? 'website',
     simulation: sim,
   });
+  // 담당 AM 배정 (전문 서비스 · 업무량 기준)
+  const am = assign(store, 'am', project);
+  if (am) store.update('projects', project.id, { amId: am.id });
   const lines = [
     input.description && String(input.description).trim(),
     service && `희망 서비스: ${service.name}`,

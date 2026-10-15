@@ -60,6 +60,7 @@ function respond(body, kind, i) {
     ] });
   }
   // 시안 1은 바로 통과, 시안 2는 AD가 한 번 반려 → 디자이너가 고쳐서 통과
+  if (kind === 'copy') return json({ copies: [{ headline: '모모카페', subhead: '', body: '', cta: '', notes: '워드마크' }, { headline: '모모', subhead: '', body: '', cta: '', notes: '' }] });
   if (kind === 'make') return json({ title: `시안 ${Math.min(i, 1) + 1}`, rationale: '설명', format: 'svg', code: i === 2 ? SVG.replace('Logo', 'Logo v2') : SVG });
   if (kind === 'review') return json([{ score: 9, summary: '좋음', issues: [], decision: 'approve' }, { score: 6, summary: '글자 작음', issues: ['글자를 키울 것'], decision: 'rework' }, { score: 8, summary: '좋아짐', issues: [], decision: 'approve' }][i]);
   if (kind === 'kickoff') return json({ milestones: [{ title: '1차 시안', owner: 'designer', due: '2099-01-10' }, { title: '시안 공유', owner: 'am', due: '2099-01-11' }, { title: '잔금', owner: 'finance', due: '2099-01-20' }], risks: ['피드백 지연'], kickoff_note: '시작합니다' });
@@ -121,6 +122,11 @@ test('문의부터 정산까지 전체 흐름', async () => {
   assert.match(designs[1].code, /Logo v2/);
   assert.equal(designs[1].reworks, 1);
   assert.equal(designs[0].reworks, 0);
+  // 카피라이터가 먼저 문구를 쓰고, 디자이너는 그 문구를 받아 제작
+  assert.equal(designs[0].copywriterId, 'stf_cw');
+  assert.equal(designs[0].copy.headline, '모모카페');
+  assert.match(calls.find((c) => c.kind === 'make').body.messages[0].content.at(-1).text, /Copy from the copywriter[\s\S]*모모카페/);
+  assert.ok(store.get('projects', p.id).pmId, '킥오프 때 PM 배정');
   const staffMsgs = store.find('messages', (m) => m.projectId === p.id && m.from === 'staff');
   assert.ok(staffMsgs.some((m) => /\[킥오프\]/.test(m.text)));
   assert.ok(staffMsgs.some((m) => /\[반려\]/.test(m.text)));

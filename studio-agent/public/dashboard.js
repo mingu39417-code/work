@@ -426,7 +426,7 @@
         </div>
 
         <div class="card"><h2>회사 운영</h2>
-          <div class="row">${f('데일리 스탠드업 보고 시각 (KST, 시)', 'company.standupHour', s.company.standupHour, 'type="number" min="0" max="23"')}${f('연체 독촉 간격 (일)', 'company.overdueReminderDays', s.company.overdueReminderDays, 'type="number" min="1"')}${f('AD 반려 후 재작업 최대 횟수', 'design.maxReworks', s.design.maxReworks, 'type="number" min="0" max="5"')}</div>
+          <div class="row">${f('데일리 스탠드업 보고 시각 (KST, 시)', 'company.standupHour', s.company.standupHour, 'type="number" min="0" max="23"')}${f('연체 독촉 간격 (일)', 'company.overdueReminderDays', s.company.overdueReminderDays, 'type="number" min="1"')}${f('AD 반려 후 재작업 최대 횟수', 'design.maxReworks', s.design.maxReworks, 'type="number" min="0" max="5"')}<div class="field"><label>&nbsp;</label><label class="switch"><input type="checkbox" name="design.copywriting" ${s.design.copywriting !== false ? 'checked' : ''}> 카피라이터가 시안 문구 먼저 작성</label></div></div>
           <label class="switch"><input type="checkbox" name="company.requireContract" ${s.company.requireContract ? 'checked' : ''}> 견적 수락 후 용역 계약서 서명을 받은 뒤에만 청구 · 작업</label>
           <div class="field" style="margin-top:10px"><label>계약서 양식 — {{project}} {{scope}} {{total}} {{deposit}} {{balance}} {{days}} {{revisions}} {{extraRevisionPrice}} {{client}} {{studio}} {{owner}} {{businessInfo}} {{date}} 자리에 견적 내용이 들어갑니다. 실제 사용 전 전문가 검토를 권합니다.</label>
           <textarea name="company.contractTemplate" style="min-height:260px;font-size:0.85rem">${esc(s.company.contractTemplate)}</textarea></div>
@@ -674,7 +674,9 @@
   // ── 조직 (직원) ──
   async function org() {
     const [list, s] = await Promise.all([api('/api/staff'), api('/api/settings')]);
-    const ROLE_LABEL = Object.fromEntries(list.map((x) => [x.role, x.roleLabel]));
+    const ROLE_LABEL = Object.fromEntries(Object.entries(META.roles).map(([k, v]) => [k, v.label]));
+    const svcBoxes = (cur) => s.services.map((v) => `<label class="chip-check"><input type="checkbox" name="specialties" value="${esc(v.id)}" ${(cur ?? []).includes(v.id) ? 'checked' : ''}>${esc(v.name)}</label>`).join('');
+    const formBody = (form) => { const fd = new FormData(form); return { ...Object.fromEntries(fd), specialties: fd.getAll('specialties') }; };
     const DEPTS = META.departments;
     const posOpts = (cur) => META.positions.map((p) => `<option ${p === cur ? 'selected' : ''}>${p}</option>`).join('');
     const modelOpts = (cur) => `<option value="">회사 기본 (${esc(META.models[OV.agent.model] ?? OV.agent.model)})</option>${Object.entries(META.models).map(([k, v]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${esc(v)}</option>`).join('')}`;
@@ -683,10 +685,10 @@
       <div class="page-head"><h1>조직도</h1></div>
       ${Pixel.orgChart(list, s.profile.ownerName, META)}
       <div class="card" style="margin-bottom:16px"><h3>업무 흐름</h3><p class="pre" style="margin:0;font-size:0.92rem">문의 → 영업팀 응대 · 견적 → 고객 견적 수락 → 계약서 서명 → 계약금 청구 · 입금(대표 확인)
-→ PM팀 킥오프(일정 · 디자이너 배정) → 크리에이티브 실장 방향 설정 → 디자이너 제작 → 실장 검수(반려 시 재작업)
+→ PM팀 킥오프(일정 · 담당 PM · 디자이너 배정) → 크리에이티브 실장 방향 설정 → 카피라이터 문구 → 디자이너 제작 → 실장 검수(반려 시 재작업)
 → 영업팀 시안 제시 → 고객 피드백 → 수정 라운드 → 최종 확정 → 잔금 청구 → 입금 → 원본 납품 → PM팀 회고
-매일 아침 PM팀 스탠드업 보고 · 일정 지연 / 연체 점검(경영지원팀 → 영업팀 독촉)</p></div>
-      <p class="muted">직원은 모두 AI이며 고객에게는 이름과 함께 항상 'AI'로 표시됩니다. 같은 직무가 여럿이면 직책이 높은 사람이 대표로 맡고, 디자이너는 일이 가장 적은 사람에게 자동 배정됩니다.</p>
+매일 아침 PM팀 스탠드업 보고 · 일정 지연 / 연체 점검(경영지원팀 → 영업팀 독촉) · 신규 영업 메일은 BD 담당(동의 · 거래관계 대상만)</p></div>
+      <p class="muted">직원은 모두 AI이며 고객에게는 이름과 함께 항상 'AI'로 표시됩니다. AM · PM · 디자이너는 프로젝트마다 한 명씩 자동 배정됩니다 — 담당 한도에 여유가 있고, 전문 서비스가 맞고, 일이 적은 사람 순. 경력 · 배경은 업무 판단용 가상 설정이며 고객에게 실제 경력처럼 말하지 않습니다. 업무 원칙은 그 직원의 프롬프트에 그대로 들어가 항상 지켜집니다.</p>
       ${Object.entries(DEPTS).map(([key, d]) => {
         const people = list.filter((x) => x.dept === key).sort((a, b) => rank(a.position) - rank(b.position));
         if (!people.length) return '';
@@ -700,16 +702,29 @@
               <div><span class="badge ${x.busy ? 'warn' : x.active === false ? '' : 'ok'}" style="white-space:normal;line-height:1.35">${x.busy ? `작업 중 · ${esc(x.busy)}` : x.active === false ? '휴직' : '근무 중'}</span></div>
             </div>
           </div>
-          <small><b>${esc(x.roleLabel)}</b> — ${esc(x.duty)}</small>
-          <div><label>업무 성향</label><textarea name="persona" style="min-height:60px">${esc(x.persona)}</textarea></div>
-          <div><label>모델</label><select name="model">${modelOpts(x.model)}</select></div>
-          <small>진행 ${x.stats.activeProjects}건${x.role === 'designer' ? ` · 시안 ${x.stats.designsMade}개 · 실장 검수 평균 ${x.stats.avgScore ?? '-'}점 · 반려 ${x.stats.reworks}회` : ''}${x.role === 'ad' ? ` · 검수 ${x.stats.designsReviewed}건` : ''} · 이번 달 비용 $${x.stats.costMonth.toFixed(2)}</small>
+          <small style="display:block"><b>${esc(x.roleLabel)}</b> — ${esc(x.duty)}</small>
+          <small class="muted" style="display:block">보고 대상: ${esc(x.reportsTo)}${x.load != null ? ` · 담당 ${x.load}/${x.capacityNow}건` : ''}${x.career ? ` · ${esc(x.career)}` : ''}</small>
+          ${x.bio ? `<p style="margin:0;font-size:.9rem">${esc(x.bio)}</p>` : ''}
+          ${x.skills?.length ? `<div class="skill-tags">${x.skills.map((k) => `<span>${esc(k)}</span>`).join('')}</div>` : ''}
+          <details><summary>프로필 · 업무 원칙 수정</summary><div class="stack" style="margin-top:8px">
+            <div class="row"><div><label>경력 (가상 설정)</label><input name="career" value="${esc(x.career)}"></div>${x.load != null ? `<div style="max-width:120px"><label>동시 담당 한도</label><input name="capacity" type="number" min="1" max="20" value="${esc(x.capacity ?? '')}" placeholder="${x.capacityNow}"></div>` : ''}</div>
+            <div><label>소개 · 배경</label><textarea name="bio" style="min-height:54px">${esc(x.bio)}</textarea></div>
+            <div><label>보유 스킬 (쉼표로 구분)</label><input name="skills" value="${esc((x.skills ?? []).join(', '))}"></div>
+            <div><label>전문 서비스 (배정 우선)</label><div class="chip-row">${svcBoxes(x.specialties)}</div></div>
+            <div><label>업무 성향</label><textarea name="persona" style="min-height:54px">${esc(x.persona)}</textarea></div>
+            <div><label>업무 원칙 (한 줄에 하나, 항상 지킴)</label><textarea name="principles" style="min-height:90px">${esc(x.principles)}</textarea></div>
+            <div><label>모델</label><select name="model">${modelOpts(x.model)}</select></div>
+          </div></details>
+          <small>진행 ${x.stats.activeProjects}건${x.role === 'designer' ? ` · 시안 ${x.stats.designsMade}개 · 실장 검수 평균 ${x.stats.avgScore ?? '-'}점 · 반려 ${x.stats.reworks}회` : ''}${x.role === 'ad' ? ` · 검수 ${x.stats.designsReviewed}건` : ''}${x.role === 'copywriter' ? ` · 카피 ${x.stats.copies}건` : ''} · 이번 달 비용 $${x.stats.costMonth.toFixed(2)}</small>
           <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn small primary">저장</button><button type="button" class="btn small" data-toggle>${x.active === false ? '복직' : '휴직'}</button></div>
         </form>`).join('')}</div>`;
       }).join('')}
       <form class="card stack" id="hire" style="margin-top:22px"><h2>채용</h2>
         <div class="row"><div><label>이름</label><input name="name" required></div><div><label>직무 (부서는 자동)</label><select name="role">${Object.entries(ROLE_LABEL).map(([k, v]) => `<option value="${k}" ${k === 'designer' ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div><div><label>직책</label><select name="position">${posOpts('사원')}</select></div><div><label>모델</label><select name="model">${modelOpts('')}</select></div></div>
+        <div class="row"><div><label>경력 (가상 설정)</label><input name="career" placeholder="예: 경력 6년 · 패키지 디자인"></div><div><label>보유 스킬 (쉼표로 구분)</label><input name="skills" placeholder="예: 패키지, 일러스트, 레터링"></div></div>
         <div><label>업무 성향 · 전문 스타일</label><input name="persona" placeholder="예: 레트로 · 타이포 포스터 전문, 대담한 색 사용"></div>
+        <div><label>전문 서비스 (배정 우선)</label><div class="chip-row">${svcBoxes([])}</div></div>
+        <div><label>업무 원칙 (한 줄에 하나)</label><textarea name="principles" style="min-height:60px" placeholder="예: 납품 전 인쇄용 CMYK 변환 확인"></textarea></div>
         <div><button class="btn primary">채용</button></div></form>`;
     Pixel.mount($('#view'));
     $$('[data-goto]').forEach((b) => (b.onclick = () => {
@@ -718,10 +733,10 @@
       card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash');
     }));
     $$('[data-staff]').forEach((f) => {
-      f.onsubmit = async (e) => { e.preventDefault(); try { await api(`/api/staff/${f.dataset.staff}`, { method: 'PATCH', body: Object.fromEntries(new FormData(f)) }); toast('저장했습니다'); route(); } catch (err) { toast(err.message); } };
+      f.onsubmit = async (e) => { e.preventDefault(); try { await api(`/api/staff/${f.dataset.staff}`, { method: 'PATCH', body: formBody(f) }); toast('저장했습니다'); route(); } catch (err) { toast(err.message); } };
       f.querySelector('[data-toggle]').onclick = async (e) => { try { await api(`/api/staff/${f.dataset.staff}`, { method: 'PATCH', body: { active: e.target.textContent === '복직' } }); route(); } catch (err) { toast(err.message); } };
     });
-    $('#hire').onsubmit = async (e) => { e.preventDefault(); try { await api('/api/staff', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) }); toast('채용했습니다'); route(); } catch (err) { toast(err.message); } };
+    $('#hire').onsubmit = async (e) => { e.preventDefault(); try { await api('/api/staff', { method: 'POST', body: formBody(e.target) }); toast('채용했습니다'); route(); } catch (err) { toast(err.message); } };
   }
 
   // ── 보고서 ──

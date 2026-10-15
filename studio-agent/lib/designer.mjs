@@ -1,7 +1,8 @@
 // 디자인팀 — 실제 시안 파일(SVG/HTML)을 만듭니다.
 // 1) 아트 디렉터: 시안 수만큼 서로 다른 크리에이티브 방향을 정합니다(수정 라운드는 고객이 고른 안을 다듬음).
-// 2) 디자이너: 방향마다 완성된 파일을 코드로 그립니다.
-// 3) 아트 디렉터 검수: 기준(8점) 미달이면 구체적인 피드백과 함께 반려 → 디자이너가 다시 (최대 N회).
+// 2) 카피라이터: 방향마다 시안에 들어갈 문구를 씁니다(카피라이터가 없거나 꺼져 있으면 건너뜀).
+// 3) 디자이너: 방향과 카피로 완성된 파일을 코드로 그립니다.
+// 4) 아트 디렉터 검수: 기준(8점) 미달이면 구체적인 피드백과 함께 반려 → 디자이너가 다시 (최대 N회).
 // 오가는 대화는 사내 채널(대표만 보임)에 남고, 끝나면 AM에게 designs_ready를 넘겨 고객에게 보여 줍니다.
 
 import fs from 'node:fs';
@@ -35,6 +36,29 @@ const DIRECTIONS_SCHEMA = {
     },
   },
   required: ['directions'],
+  additionalProperties: false,
+};
+
+const COPY_SCHEMA = {
+  type: 'object',
+  properties: {
+    copies: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          headline: { type: 'string' },
+          subhead: { type: 'string' },
+          body: { type: 'string' },
+          cta: { type: 'string' },
+          notes: { type: 'string' },
+        },
+        required: ['headline', 'subhead', 'body', 'cta', 'notes'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['copies'],
   additionalProperties: false,
 };
 
@@ -125,7 +149,8 @@ export async function runDesignJob(ctx, job) {
   const designer = pickDesigner(store, project);
   if (designer && project.designerId !== designer.id) store.update('projects', project.id, { designerId: designer.id });
   const lessons = store.all('lessons');
-  const sys = (st) => [{ type: 'text', text: designerSystem(s, lessons) + staffBlock(st), cache_control: { type: 'ephemeral' } }];
+  const sys = (st) => [{ type: 'text', text: designerSystem(s, lessons) + staffBlock(st, s), cache_control: { type: 'ephemeral' } }];
+  const cw = s.design.copywriting !== false ? lead(store, 'copywriter') : null;
   const brief = briefText(store, project, job);
   const images = imageBlocks(store, project);
   const base = baseDesignsText(store, job.baseDesignIds ?? []);
@@ -151,8 +176,27 @@ export async function runDesignJob(ctx, job) {
   const directions = jsonOf(dirMsg).directions.slice(0, job.concepts);
   await say(ad, `[${round}차 크리에이티브 방향] ${designer?.name ?? '디자이너'}님 부탁해요.\n${directions.map((d, i) => `${i + 1}. ${d.name} — ${d.idea}`).join('\n')}`);
 
+  // 2) 카피라이터 — 방향마다 들어갈 문구
+  let copies = [];
+  if (cw) {
+    const cwMsg = await llm.stream({
+      model: modelFor(store, cw),
+      system: sys(cw),
+      max_tokens: 8000,
+      output_config: { ...effort, format: { type: 'json_schema', schema: COPY_SCHEMA } },
+      messages: [{
+        role: 'user',
+        content: `${brief}\n\n${base ? `${base}\n\n` : ''}# Directions from the art director\n${JSON.stringify(directions, null, 1)}\n\nAs copywriter, write the text that will appear in each design, in the client's language — exactly one entry per direction, same order. Match each direction's tone and the deliverable's real space (a logo has only the wordmark/tagline; an SNS card has a short headline; a detail page has sections). Use only facts given by the client (names, prices, dates, contact); where a needed fact is missing, put a clear placeholder like [연락처] instead of inventing it. No unsupported superlatives (최고 · 최초 · 1위). ${base ? 'This is a revision: keep the existing copy unless the instructions ask for text changes.' : ''} Leave a field empty if the format does not need it. "notes" tells the designer about emphasis and line breaks.`,
+      }],
+    }, 'design_copy', { projectId: project.id, staffId: cw.id });
+    copies = jsonOf(cwMsg).copies ?? [];
+    await say(cw, `[카피] ${designer?.name ?? '디자이너'}님, 방향별 문구 드려요.\n${directions.map((d, i) => `${i + 1}. ${d.name} — ${copies[i]?.headline || '(문구 없음)'}`).join('\n')}`);
+  }
+
   const created = [];
   for (const [i, dir] of directions.entries()) {
+    const copy = copies[i] ?? null;
+    const copyText = copy ? `\n\n# Copy from the copywriter (use it verbatim; only adjust line breaks to fit)\n${JSON.stringify(copy, null, 1)}` : '';
     let feedback = '';
     let best = null;
     const maxReworks = s.design.selfReview ? Math.max(0, Number(s.design.maxReworks ?? 2)) : 0;
@@ -169,7 +213,7 @@ export async function runDesignJob(ctx, job) {
           role: 'user',
           content: [
             ...images,
-            { type: 'text', text: `${brief}\n\n${base ? `${base}\n\n` : ''}# Direction from the art director\n${JSON.stringify(dir, null, 1)}${feedback ? `\n\n# The art director sent your previous version back. Fix every point:\n${feedback}\n\n# Your previous version\n\`\`\`\n${best.code.slice(0, MAX_CODE_IN_CONTEXT)}\n\`\`\`` : ''}\n\nProduce the finished design file now. "code" is the complete ${dir.format.toUpperCase()} document. "rationale" is 2-3 sentences in the client's language explaining the idea. "title" is a short concept name in the client's language.` },
+            { type: 'text', text: `${brief}\n\n${base ? `${base}\n\n` : ''}# Direction from the art director\n${JSON.stringify(dir, null, 1)}${copyText}${feedback ? `\n\n# The art director sent your previous version back. Fix every point:\n${feedback}\n\n# Your previous version\n\`\`\`\n${best.code.slice(0, MAX_CODE_IN_CONTEXT)}\n\`\`\`` : ''}\n\nProduce the finished design file now. "code" is the complete ${dir.format.toUpperCase()} document. "rationale" is 2-3 sentences in the client's language explaining the idea. "title" is a short concept name in the client's language.` },
           ],
         }],
       }, 'design_make', { projectId: project.id, staffId: designer?.id });
@@ -189,7 +233,7 @@ export async function runDesignJob(ctx, job) {
         output_config: { ...effort, format: { type: 'json_schema', schema: REVIEW_SCHEMA } },
         messages: [{
           role: 'user',
-          content: `As art director, review ${designer?.name ?? 'the designer'}'s file before the client sees it.\n\n${brief}\n\n# Direction\n${JSON.stringify(dir)}\n\n# File (${design.format})\n\`\`\`\n${design.code}\n\`\`\`\n\nCheck: brief fit, hierarchy, typography, spacing/alignment, color, legibility, text overflow/clipping, correct copy and spelling, technical validity (well-formed, self-contained, viewBox/size). Score 1-10. "decision" is "approve" if it is good enough to show the client (score 8+), otherwise "rework". "issues" are specific, actionable fixes for the designer (Korean). "summary" is one Korean sentence for the owner.`,
+          content: `As art director, review ${designer?.name ?? 'the designer'}'s file before the client sees it.\n\n${brief}\n\n# Direction\n${JSON.stringify(dir)}${copyText}\n\n# File (${design.format})\n\`\`\`\n${design.code}\n\`\`\`\n\nCheck: brief fit, hierarchy, typography, spacing/alignment, color, legibility, text overflow/clipping, correct copy and spelling, technical validity (well-formed, self-contained, viewBox/size). Score 1-10. "decision" is "approve" if it is good enough to show the client (score 8+), otherwise "rework". "issues" are specific, actionable fixes for the designer (Korean). "summary" is one Korean sentence for the owner.`,
         }],
       }, 'design_review', { projectId: project.id, staffId: ad?.id });
       const r = jsonOf(revMsg);
@@ -214,7 +258,9 @@ export async function runDesignJob(ctx, job) {
       direction: dir,
       review: best.review,
       reworks: best.reworks,
+      copy,
       designerId: designer?.id ?? null,
+      copywriterId: copy ? cw?.id ?? null : null,
       reviewerId: ad?.id ?? null,
       shared: false,
       approved: false,
@@ -225,6 +271,6 @@ export async function runDesignJob(ctx, job) {
   }
 
   store.update('projects', project.id, { designRounds: round });
-  completeMilestones(store, store.get('projects', project.id), ['designer', 'ad']);
+  completeMilestones(store, store.get('projects', project.id), ['designer', 'ad', ...(copies.length ? ['copywriter'] : [])]);
   enqueueAgent(store, project.id, { kind: 'designs_ready', designIds: created });
 }

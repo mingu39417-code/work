@@ -28,6 +28,7 @@ export function kindOf(body) {
   if (tools.includes('draft_outreach')) return 'sales';
   const props = Object.keys(body.output_config?.format?.schema?.properties ?? {});
   if (props.includes('directions')) return 'directions';
+  if (props.includes('copies')) return 'copy';
   if (props.includes('code')) return 'make';
   if (props.includes('decision')) return 'review';
   if (props.includes('milestones')) return 'kickoff';

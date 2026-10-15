@@ -7,7 +7,7 @@
 
 import { enqueue, enqueueAgent, postMessage, money, short, STATUSES, ACTIVE_STATUSES, acceptedQuote } from './actions.mjs';
 import { jsonOf, textOf } from './claude.mjs';
-import { lead, pickDesigner, modelFor, staffBlock, staffLabel } from './staff.mjs';
+import { lead, assign, pickDesigner, projectStaff, modelFor, staffBlock, staffLabel } from './staff.mjs';
 import { profileBlock, lessonsBlock } from './prompts.mjs';
 
 const KST = 9 * 3600e3;
@@ -19,7 +19,7 @@ function pmSystem(s, pm, lessons) {
 
 ${profileBlock(s)}
 
-You are the studio's project manager. You plan realistic schedules, track progress against them, flag risks early and keep the owner informed. You never contact clients directly; the account manager does that.${staffBlock(pm)}${lessonsBlock(s, lessons, 'account')}`;
+You are the studio's project manager. You plan realistic schedules, track progress against them, flag risks early and keep the owner informed. You never contact clients directly; the account manager does that.${staffBlock(pm, s)}${lessonsBlock(s, lessons, 'account')}`;
 }
 
 const PLAN_SCHEMA = {
@@ -47,9 +47,10 @@ export async function runKickoff(ctx, { projectId }) {
   const s = store.settings;
   const project = store.get('projects', projectId);
   if (!project || project.plan) return;
-  const pm = lead(store, 'pm');
+  const pm = assign(store, 'pm', project);
   const designer = pickDesigner(store, project);
-  if (designer) store.update('projects', project.id, { designerId: designer.id });
+  store.update('projects', project.id, { ...(pm ? { pmId: pm.id } : {}), ...(designer ? { designerId: designer.id } : {}) });
+  const cw = store.settings.design.copywriting !== false ? lead(store, 'copywriter') : null;
   const q = acceptedQuote(store, project);
   const msg = await llm.create({
     model: modelFor(store, pm),
@@ -62,16 +63,16 @@ export async function runKickoff(ctx, { projectId }) {
 Brief: ${project.brief || '(see quote)'}
 Client deadline: ${project.deadline || '(none given)'}
 Quote: ${q ? `${q.items.map((i) => i.name).join(', ')} — ${q.timelineDays} working days, ${q.revisions} revision rounds` : '(none)'}
-Assigned designer: ${staffLabel(designer)}
+Team: PM (you) ${staffLabel(pm)}; AM ${staffLabel(projectStaff(store, project, 'am'))}; AD ${staffLabel(lead(store, 'ad'))}; designer ${staffLabel(designer)}${cw ? `; copywriter ${staffLabel(cw)}` : ''}
 
-Plan 4-7 milestones from now to final delivery (dates as YYYY-MM-DD, working days only, inside the quoted timeline and the client deadline). Include: creative direction (ad), first concepts (designer), internal review (ad), client presentation (am), client feedback (client), revision(s), final files (designer), final invoice (finance). List the main risks. "kickoff_note" is a short Korean message to the team in the internal channel.`,
+Plan 4-7 milestones from now to final delivery (dates as YYYY-MM-DD, working days only, inside the quoted timeline and the client deadline). Use these owner codes: am, pm, ad, designer, copywriter, finance, client. Include: creative direction (ad), ${cw ? 'copy (copywriter), ' : ''}first concepts (designer), internal review (ad), client presentation (am), client feedback (client), revision(s), final files (designer), final invoice (finance). List the main risks. "kickoff_note" is a short Korean message to the team in the internal channel.`,
     }],
   }, 'pm_kickoff', { projectId, staffId: pm?.id });
   const plan = jsonOf(msg);
   store.update('projects', project.id, { plan: { ...plan, milestones: plan.milestones.map((m) => ({ ...m, done: false })), createdAt: new Date().toISOString() } });
   await postMessage(ctx, project, {
     from: 'staff', staffId: pm?.id, internal: true,
-    text: `[킥오프] ${plan.kickoff_note}\n\n일정:\n${plan.milestones.map((m) => `· ${m.due} ${m.title} (${m.owner})`).join('\n')}${plan.risks.length ? `\n\n리스크: ${plan.risks.join(' / ')}` : ''}\n담당 디자이너: ${designer?.name ?? '-'}`,
+    text: `[킥오프] ${plan.kickoff_note}\n\n일정:\n${plan.milestones.map((m) => `· ${m.due} ${m.title} (${m.owner})`).join('\n')}${plan.risks.length ? `\n\n리스크: ${plan.risks.join(' / ')}` : ''}\n담당: PM ${pm?.name ?? '-'} · 디자이너 ${designer?.name ?? '-'}${cw ? ` · 카피 ${cw.name}` : ''}`,
   });
   store.log('pm', `${pm?.name ?? 'PM'} 킥오프 완료 — 마일스톤 ${plan.milestones.length}개, 담당 ${designer?.name ?? '-'} — ${project.title}`, { projectId });
   enqueueAgent(store, project.id, { kind: 'kickoff_done' });
@@ -153,7 +154,7 @@ export async function runRetro(ctx, { projectId }) {
   const s = store.settings;
   const project = store.get('projects', projectId);
   if (!project) return;
-  const pm = lead(store, 'pm');
+  const pm = projectStaff(store, project, 'pm');
   const thread = store.find('messages', (m) => m.projectId === project.id).map((m) => `${m.from}${m.internal ? '(internal)' : ''}: ${short(m.text, 300)}`).join('\n');
   const designs = store.find('designs', (d) => d.projectId === project.id);
   const msg = await llm.create({

@@ -7,7 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { Vault } from './vault.mjs';
-import { defaultStaff, normalizeStaff } from './staff.mjs';
+import { defaultStaff, normalizeStaff, upgradeRoster, ROSTER_VERSION } from './staff.mjs';
 import { DEFAULT_CONTRACT } from './contract.mjs';
 
 export const COLLECTIONS = [
@@ -72,7 +72,7 @@ export function defaultSettings() {
       invoice: 'auto',
       outreach: 'approve',
     },
-    design: { selfReview: true, maxReworks: 2 },
+    design: { selfReview: true, maxReworks: 2, copywriting: true },
     company: {
       requireContract: true,
       contractTemplate: DEFAULT_CONTRACT,
@@ -116,6 +116,12 @@ export class Store extends EventEmitter {
     }
     if (this.data.staff.some((x) => !x.dept || !x.position)) {
       this.data.staff = this.data.staff.map(normalizeStaff);
+      this.save();
+    }
+    // 기본 명단이 커진 새 버전: 빠진 기본 직원 채용 + 빈 프로필 채우기 (한 번만)
+    if ((this.data.settings.staffRoster ?? 1) < ROSTER_VERSION) {
+      this.data.staff = upgradeRoster(this.data.staff);
+      this.data.settings.staffRoster = ROSTER_VERSION;
       this.save();
     }
   }

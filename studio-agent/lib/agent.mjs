@@ -9,7 +9,7 @@ import {
 } from './actions.mjs';
 import { accountManagerSystem, salesSystem } from './prompts.mjs';
 import { textOf } from './claude.mjs';
-import { lead as leadStaff, modelFor, staffBlock, staffLabel } from './staff.mjs';
+import { lead as leadStaff, leadOrFallback, projectStaff, modelFor, staffBlock, staffLabel } from './staff.mjs';
 
 const MAX_STEPS = 12;
 
@@ -307,7 +307,7 @@ ${events.map((e) => `- ${describeEvent(store, e)}`).join('\n')}
 - Work allowed now: ${workAllowed(store, project) ?? 'yes'}
 - Accepted quote: ${aq ? `${aq.id} total ${aq.total}, ${aq.revisions} revisions, ${aq.timelineDays} days. Remaining billable: ${invoiceRemaining(store, project)}` : 'none'}
 - Contract: ${(() => { const c = contractOf(store, project); return c ? `${c.status}${c.signedAt ? ` (signed ${c.signedAt.slice(0, 10)} by ${c.signerName})` : ''}` : (store.settings.company.requireContract && !project.simulation ? 'not created yet (created automatically when the client accepts a quote)' : 'not required'); })()}
-- Team: AM ${staffLabel(leadStaff(store, 'am'))}; designer ${project.designerId ? staffLabel(store.get('staff', project.designerId)) : '(assigned at kickoff)'}
+- Team: AM (you) ${staffLabel(projectStaff(store, project, 'am'))}; PM ${project.pmId ? staffLabel(projectStaff(store, project, 'pm')) : '(assigned at kickoff)'}; AD ${staffLabel(leadStaff(store, 'ad'))}; designer ${project.designerId ? staffLabel(store.get('staff', project.designerId)) : '(assigned at kickoff)'}${leadStaff(store, 'copywriter') ? `; copywriter ${staffLabel(leadStaff(store, 'copywriter'))}` : ''}
 
 # Schedule (set by the PM)
 ${(project.plan?.milestones ?? []).map((m) => `- ${m.due} ${m.title} [${m.owner}] ${m.done ? 'DONE' : ''}`).join('\n') || '(no schedule yet)'}
@@ -387,10 +387,10 @@ export async function runAccountManager(ctx, { projectId, events }) {
     store.log('agent', `자동 응대 꺼짐 — 대표가 직접 처리: ${project.title}`, { projectId });
     return;
   }
-  store.log('agent', `${staffLabel(leadStaff(store, 'am'))} 업무 시작 (${events.map((e) => e.kind).join(', ')}) — ${project.title}`, { projectId });
-  const am = leadStaff(store, 'am');
+  const am = projectStaff(store, project, 'am');
+  store.log('agent', `${staffLabel(am)} 업무 시작 (${events.map((e) => e.kind).join(', ')}) — ${project.title}`, { projectId });
   const note = await loop(ctx, {
-    system: accountManagerSystem(store.settings, store.all('lessons')) + staffBlock(am),
+    system: accountManagerSystem(store.settings, store.all('lessons')) + staffBlock(am, store.settings),
     tools: ACCOUNT_TOOLS,
     context: buildProjectContext(store, project, events),
     purpose: 'account_manager',
@@ -426,9 +426,9 @@ export async function runSales(ctx, { leadId, instruction }) {
 - Studio inquiry link: ${s.publicUrl.replace(/\/$/, '')}/
 ${instruction ? `\nOwner's instruction: ${instruction}` : ''}`;
   store.log('sales', `영업 메시지 작성 시작 — ${lead.company || lead.name}`, { leadId });
-  const am = leadStaff(store, 'am');
+  const am = leadOrFallback(store, 'sales');
   const note = await loop(ctx, {
-    system: salesSystem(s, store.all('lessons')) + staffBlock(am),
+    system: salesSystem(s, store.all('lessons')) + staffBlock(am, s),
     tools: SALES_TOOLS,
     context,
     purpose: 'sales',

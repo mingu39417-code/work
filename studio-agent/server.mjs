@@ -19,7 +19,7 @@ import {
 } from './lib/actions.mjs';
 import { mailAccount, mailer, GMAIL, accountAuth } from './lib/mailer.mjs';
 import { startInboxPoller } from './lib/inbox.mjs';
-import { ROLES, DEPARTMENTS, POSITIONS, deptOf, defaultPosition, busyStaff, staffLabel } from './lib/staff.mjs';
+import { ROLES, DEPARTMENTS, POSITIONS, ASSIGNED, deptOf, defaultPosition, busyStaff, staffLabel, loadOf, capacityOf, managerOf } from './lib/staff.mjs';
 import { financeSummary } from './lib/pm.mjs';
 import { DEFAULT_CONTRACT } from './lib/contract.mjs';
 import { ImapFlow } from 'imapflow';
@@ -261,6 +261,22 @@ function projectDetail(store, p) {
   };
 }
 
+// 직원 프로필 입력 정리 (채용 · 수정 공통)
+function staffProfile(b, services) {
+  const out = {};
+  const list = (v) => (Array.isArray(v) ? v : String(v ?? '').split(/[,\n]/)).map((x) => String(x).trim()).filter(Boolean);
+  if (typeof b.career === 'string') out.career = b.career.trim().slice(0, 80);
+  if (typeof b.bio === 'string') out.bio = b.bio.trim().slice(0, 400);
+  if (typeof b.principles === 'string') out.principles = b.principles.trim().slice(0, 1500);
+  if (b.skills !== undefined) out.skills = list(b.skills).map((x) => x.slice(0, 40)).slice(0, 12);
+  if (b.specialties !== undefined) out.specialties = list(b.specialties).filter((id) => services.some((x) => x.id === id));
+  if (b.capacity !== undefined) {
+    const n = Number(b.capacity);
+    out.capacity = b.capacity === '' || b.capacity === null ? null : Number.isInteger(n) && n >= 1 && n <= 20 ? n : (() => { throw new HttpError(400, '담당 한도는 1~20 사이 정수'); })();
+  }
+  return out;
+}
+
 // 직원별 성과 · 비용 (이번 달)
 function staffView(store, running) {
   const month = new Date().toISOString().slice(0, 7);
@@ -270,14 +286,20 @@ function staffView(store, running) {
     const made = store.find('designs', (d) => d.designerId === st.id);
     const reviewed = store.find('designs', (d) => d.reviewerId === st.id);
     const scores = made.map((d) => d.review?.score).filter(Boolean);
-    const active = store.find('projects', (p) => !p.simulation && ACTIVE_STATUSES.includes(p.status) && (st.role === 'designer' ? p.designerId === st.id : ['am', 'pm', 'finance', 'ad'].includes(st.role)));
+    const field = ASSIGNED[st.role];
+    const active = store.find('projects', (p) => !p.simulation && ACTIVE_STATUSES.includes(p.status) && (field ? p[field] === st.id : true));
+    const mgr = managerOf(store, st);
     return {
       ...st,
       roleLabel: ROLES[st.role]?.label ?? st.role,
       deptName: DEPARTMENTS[st.dept]?.name ?? '',
       busy: busy[st.id] ?? null,
       duty: ROLES[st.role]?.duty ?? '',
+      reportsTo: mgr ? `${mgr.position} ${mgr.name}` : '대표',
+      load: field ? loadOf(store, st) : null,
+      capacityNow: field ? capacityOf(st) : null,
       stats: {
+        copies: store.find('designs', (d) => d.copywriterId === st.id).length,
         activeProjects: active.length,
         designsMade: made.length,
         designsReviewed: reviewed.length,
@@ -486,7 +508,7 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       req.on('close', () => sseClients.delete(res));
       return;
     }
-    if (m === 'GET' && p === '/api/meta') return send(res, 200, { statuses: STATUSES, autonomy: AUTONOMY_LABELS, models: Object.fromEntries(Object.entries(MODELS).map(([k, v]) => [k, v.label])), outreachBasis: OUTREACH_BASIS, departments: DEPARTMENTS, positions: POSITIONS });
+    if (m === 'GET' && p === '/api/meta') return send(res, 200, { statuses: STATUSES, autonomy: AUTONOMY_LABELS, models: Object.fromEntries(Object.entries(MODELS).map(([k, v]) => [k, v.label])), outreachBasis: OUTREACH_BASIS, departments: DEPARTMENTS, positions: POSITIONS, roles: ROLES });
     if (m === 'GET' && p === '/api/overview') return send(res, 200, overview(ctx));
 
     if (m === 'POST' && p === '/api/agent/pause') { store.updateSettings({ paused: true }); store.log('agent', '대표가 에이전트를 일시정지했습니다'); return send(res, 200, { ok: true }); }
@@ -753,7 +775,7 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       if (!ROLES[b.role]) throw new HttpError(400, '직무를 선택하세요');
       if (!String(b.name ?? '').trim()) throw new HttpError(400, '이름을 입력하세요');
       if (b.model && !MODELS[b.model]) throw new HttpError(400, '지원하지 않는 모델');
-      const st = store.insert('staff', { name: String(b.name).trim().slice(0, 30), role: b.role, title: ROLES[b.role].label, dept: deptOf(b.role), position: POSITIONS.includes(b.position) ? b.position : defaultPosition(b.role), persona: String(b.persona ?? '').slice(0, 500), model: b.model || '', active: true });
+      const st = store.insert('staff', { name: String(b.name).trim().slice(0, 30), role: b.role, title: ROLES[b.role].label, dept: deptOf(b.role), position: POSITIONS.includes(b.position) ? b.position : defaultPosition(b.role), persona: String(b.persona ?? '').slice(0, 500), model: b.model || '', active: true, career: '', bio: '', skills: [], specialties: [], principles: '', capacity: null, ...staffProfile(b, store.settings.services) });
       store.log('hr', `채용: ${st.name} (${ROLES[st.role].label})`);
       return send(res, 200, st);
     }
@@ -765,10 +787,11 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       if (typeof b.name === 'string' && b.name.trim()) patch.name = b.name.trim().slice(0, 30);
       if (typeof b.persona === 'string') patch.persona = b.persona.slice(0, 500);
       if (POSITIONS.includes(b.position)) patch.position = b.position;
+      Object.assign(patch, staffProfile(b, store.settings.services));
       if (typeof b.model === 'string') { if (b.model && !MODELS[b.model]) throw new HttpError(400, '지원하지 않는 모델'); patch.model = b.model; }
       if (typeof b.active === 'boolean') {
         // 각 직무에 최소 한 명은 남아 있어야 회사가 돌아갑니다.
-        if (!b.active && store.find('staff', (x) => x.role === st.role && x.active !== false && x.id !== st.id).length === 0) throw new HttpError(409, `${ROLES[st.role].label} 직무에 남는 사람이 없어 휴직 처리할 수 없습니다`);
+        if (!b.active && !ROLES[st.role]?.optional && store.find('staff', (x) => x.role === st.role && x.active !== false && x.id !== st.id).length === 0) throw new HttpError(409, `${ROLES[st.role].label} 직무에 남는 사람이 없어 휴직 처리할 수 없습니다`);
         patch.active = b.active;
       }
       store.update('staff', st.id, patch);

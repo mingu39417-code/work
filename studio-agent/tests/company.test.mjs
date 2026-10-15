@@ -9,8 +9,11 @@ import { createApp } from '../server.mjs';
 
 test('처음 실행하면 직무별 직원이 채용되어 있습니다', () => {
   const { ctx } = makeCtx(() => msg([text('x')]));
-  for (const role of ['am', 'pm', 'ad', 'designer', 'finance']) assert.ok(staffOf(ctx.store, role).length, role);
-  assert.equal(staffOf(ctx.store, 'designer').length, 2);
+  for (const role of ['am', 'sales', 'pm', 'ad', 'designer', 'copywriter', 'finance']) assert.ok(staffOf(ctx.store, role).length, role);
+  assert.equal(staffOf(ctx.store, 'designer').length, 3);
+  assert.equal(ctx.store.all('staff').length, 11);
+  // 모든 기본 직원에게 경력 · 스킬 · 업무 원칙 프로필이 있음
+  for (const st of ctx.store.all('staff')) assert.ok(st.career && st.skills.length && st.principles, st.name);
 });
 
 test('일이 적은 디자이너에게 배정합니다', async () => {
@@ -92,9 +95,16 @@ test('직원 API: 채용 · 수정, 직무에 마지막 한 명은 휴직 불가
   const hired = await (await api('/api/staff', 'POST', { name: '윤슬', role: 'designer', persona: '레트로 포스터' })).json();
   assert.equal(hired.role, 'designer');
   const list = await (await api('/api/staff')).json();
-  assert.equal(list.filter((x) => x.role === 'designer').length, 3);
+  assert.equal(list.filter((x) => x.role === 'designer').length, 4);
   assert.ok(list[0].stats);
-  assert.equal((await api('/api/staff/stf_pm', 'PATCH', { active: false })).status, 409, 'PM이 한 명뿐이라 휴직 불가');
+  assert.equal((await api('/api/staff/stf_fin', 'PATCH', { active: false })).status, 409, '재무가 한 명뿐이라 휴직 불가');
+  assert.equal((await api('/api/staff/stf_cw', 'PATCH', { active: false })).status, 200, '카피라이터는 없어도 회사가 돌아감');
+  assert.equal((await api('/api/staff/stf_ds3', 'PATCH', { skills: '패키지, 레터링', specialties: ['logo', 'nope'], capacity: 4, principles: '규칙 하나' })).status, 200);
+  const ds3 = app.ctx.store.get('staff', 'stf_ds3');
+  assert.deepEqual(ds3.skills, ['패키지', '레터링']);
+  assert.deepEqual(ds3.specialties, ['logo'], '없는 서비스 id는 버림');
+  assert.equal(ds3.capacity, 4);
+  assert.equal((await api('/api/staff/stf_ds3', 'PATCH', { capacity: 99 })).status, 400);
   assert.equal((await api('/api/staff/stf_ds1', 'PATCH', { active: false, name: '정다온2' })).status, 200);
   assert.equal(app.ctx.store.get('staff', 'stf_ds1').active, false);
 
@@ -122,4 +132,55 @@ test('부서 · 직책: 기본 배치, 직책이 높은 사람이 대표로 맡�
   store.update('projects', p.id, { designerId: 'stf_ds2' });
   const busy = busyStaff(store, { kind: 'design', payload: { projectId: p.id } });
   assert.ok(busy.stf_ds2 && busy.stf_ad);
+});
+
+test('배정: 전문 서비스 우선, 한도가 차면 다른 사람, AM은 문의 때 · PM은 킥오프 때 배정', async () => {
+  const { assign, projectStaff, loadOf } = await import('../lib/staff.mjs');
+  const { ctx } = makeCtx(() => msg([text('x')]));
+  const { store } = ctx;
+  // 상세페이지 문의 → 상세페이지 전문 디자이너(강민재)
+  const p = await createInquiry(ctx, { name: 'A', email: 'a@x.kr', description: '문의', serviceId: 'detail' });
+  assert.equal(pickDesigner(store, store.get('projects', p.id)).id, 'stf_ds3');
+  // 강민재 한도(2) 가득 → 다음 상세페이지는 다른 사람
+  for (const n of [1, 2]) { const q = await createInquiry(ctx, { name: 'B' + n, email: `b${n}@x.kr`, description: '문의', serviceId: 'detail' }); store.update('projects', q.id, { designerId: 'stf_ds3', status: 'in_progress' }); }
+  assert.equal(loadOf(store, store.get('staff', 'stf_ds3')), 2);
+  assert.notEqual(pickDesigner(store, store.get('projects', p.id)).id, 'stf_ds3');
+  // 로고 문의 → 로고 전문 AM(김지원), SNS 문의 → 오세린
+  const logo = await createInquiry(ctx, { name: 'C', email: 'c@x.kr', description: '문의', serviceId: 'logo' });
+  const sns = await createInquiry(ctx, { name: 'D', email: 'd@x.kr', description: '문의', serviceId: 'sns' });
+  assert.equal(store.get('projects', logo.id).amId, 'stf_am');
+  assert.equal(store.get('projects', sns.id).amId, 'stf_am2');
+  // 고객 응대 메시지는 배정된 AM 이름으로, 휴직하면 팀장이 대신
+  const m = await (await import('../lib/actions.mjs')).postMessage(ctx, store.get('projects', sns.id), { from: 'agent', text: '안녕하세요' });
+  assert.equal(m.staffId, 'stf_am2');
+  store.update('staff', 'stf_am2', { active: false });
+  assert.equal(projectStaff(store, store.get('projects', sns.id), 'am').id, 'stf_am');
+  assert.equal(assign(store, 'pm', store.get('projects', sns.id)).id, 'stf_pm');
+});
+
+test('직원 프로필과 업무 원칙이 그 직원의 프롬프트에 들어갑니다', async () => {
+  const { staffBlock } = await import('../lib/staff.mjs');
+  const { ctx } = makeCtx(() => msg([text('x')]));
+  const b = staffBlock(ctx.store.get('staff', 'stf_ds3'), ctx.store.settings);
+  assert.match(b, /상세페이지/);
+  assert.match(b, /personal work rules/);
+  assert.match(b, /never claim real-world experience/);
+});
+
+test('기존 6명 회사를 열면 새 직원이 합류하고, 대표가 고친 값은 그대로', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { Store } = await import('../lib/store.mjs');
+  const dir = tmpDir();
+  const old = ['stf_am', 'stf_pm', 'stf_ad', 'stf_ds1', 'stf_ds2', 'stf_fin'].map((id) => ({ id, name: id === 'stf_ds1' ? '내가바꾼이름' : id, role: { stf_am: 'am', stf_pm: 'pm', stf_ad: 'ad', stf_ds1: 'designer', stf_ds2: 'designer', stf_fin: 'finance' }[id], persona: id === 'stf_ds1' ? '내 설명' : 'x', active: true }));
+  fs.writeFileSync(path.join(dir, 'db.json'), JSON.stringify({ settings: {}, staff: old }));
+  const store = new Store(dir);
+  assert.equal(store.all('staff').length, 11);
+  const ds1 = store.get('staff', 'stf_ds1');
+  assert.equal(ds1.name, '내가바꾼이름');
+  assert.equal(ds1.persona, '내 설명');
+  assert.ok(ds1.skills.length, '빈 프로필은 채움');
+  // 한 번만: 다시 열어도 그대로
+  store.remove('staff', 'stf_cw');
+  assert.equal(new Store(dir).all('staff').length, 10, '대표가 내보낸 직원은 다시 생기지 않음');
 });
