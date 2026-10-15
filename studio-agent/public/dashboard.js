@@ -5,6 +5,7 @@
   let currentView = null;
   let refreshTimer = null;
 
+  const FINAL_STATUS = { queued: '제작 대기', working: '디자이너가 만드는 중', ready: '준비 완료', failed: '실패' };
   const STATUS_TONE = { inquiry: 'warn', quoted: 'accent', accepted: 'accent', in_progress: 'accent', review: 'warn', revision: 'accent', delivered: 'ok', completed: 'ok', lost: '', on_hold: '' };
   const FROM = { client: '고객', agent: '에이전트', owner: '대표(나)', system: '시스템', staff: '직원' };
   const INV_KIND = { deposit: '계약금', final: '잔금', extra_revision: '추가 수정', extra: '추가 작업' };
@@ -293,7 +294,7 @@
             <div class="stack"><iframe class="design-frame" sandbox="" loading="lazy" title="${esc(x.title)}" src="/api/designs/${x.id}/raw"></iframe>
             <div><strong>${esc(x.title)}</strong> <span class="badge">${x.round}차</span> ${x.shared ? '<span class="badge accent">공유됨</span>' : '<span class="badge">미공유</span>'} ${x.approved ? '<span class="badge ok">확정</span>' : ''}</div>
             ${x.review ? `<small>검토 ${x.review.score}/10${x.review.revised ? ' (수정 반영)' : ''} — ${esc(x.review.summary)}</small>` : ''}
-            <div class="row" style="gap:6px"><a class="btn small" href="/api/designs/${x.id}/raw" target="_blank">크게</a><a class="btn small" href="/api/designs/${x.id}/download">받기</a></div></div>`).join('') || '<span class="muted">아직 없음</span>'}</div></div>
+            <div class="row" style="gap:6px"><a class="btn small" href="/api/designs/${x.id}/raw" target="_blank">크게</a><a class="btn small" href="/api/designs/${x.id}/download">${x.approved && x.finalStatus === 'ready' ? '납품 ZIP 받기' : '받기'}</a>${x.approved ? `<button class="btn small" data-final="${x.id}">납품 파일 다시 만들기</button>` : ''}</div>${x.approved ? `<small class="muted">납품 파일: ${FINAL_STATUS[x.finalStatus] ?? '없음'}${x.finalStatus === 'ready' ? ` — ${(x.finalFiles ?? []).map((f) => esc(f.purpose)).join(', ')}` : ''}${x.finalStatus === 'failed' ? ` — ${esc(x.finalError ?? '')}` : ''}</small>` : ''}</div>`).join('') || '<span class="muted">아직 없음</span>'}</div></div>
           <div class="card"><h3>견적</h3>${d.quotes.map((q) => `<div class="item-row"><span>${money(q.total, cur())} · ${q.timelineDays}일 · 수정 ${q.revisions}회</span><span class="badge ${q.status === 'accepted' ? 'ok' : ''}">${{ sent: '발송', accepted: '수락', superseded: '대체됨' }[q.status] ?? q.status}</span></div>`).join('') || '<span class="muted">없음</span>'}</div>
           <div class="card"><h3>청구 · 입금</h3>${d.invoices.map((i) => `<div class="item-row" style="margin-bottom:6px"><span>${INV_KIND[i.kind] ?? i.kind} ${money(i.amount, cur())}<br><small>기한 ${i.dueDate}${i.clientNotified ? ' · 고객이 입금 알림' : ''}</small></span>
               ${i.status === 'sent' ? `<span class="row" style="gap:4px;flex:0 0 auto"><button class="btn small primary" data-paid="${i.id}">입금 확인</button><button class="btn small danger" data-cancel="${i.id}">취소</button></span>` : `<span class="badge ${i.status === 'paid' ? 'ok' : ''}">${i.status === 'paid' ? '입금 완료' : '취소'}</span>`}</div>`).join('') || '<span class="muted">없음</span>'}</div>
@@ -318,6 +319,7 @@
       route();
     };
     $$('[data-paid]').forEach((b) => (b.onclick = async () => { if (!confirm('입금을 확인했나요? 에이전트가 다음 단계를 진행합니다.')) return; await api(`/api/invoices/${b.dataset.paid}/paid`, { method: 'POST', body: {} }); route(); }));
+    $$('[data-final]').forEach((b) => (b.onclick = async () => { if (!confirm('확정 시안으로 납품 파일(SVG · PNG)을 다시 만들까요? API 비용이 듭니다.')) return; try { await api(`/api/designs/${b.dataset.final}/final-files`, { method: 'POST', body: {} }); toast('납품 파일을 다시 만들기 시작했습니다'); route(); } catch (err) { toast(err.message); } }));
     $$('[data-cancel]').forEach((b) => (b.onclick = async () => { if (!confirm('이 청구서를 취소할까요?')) return; await api(`/api/invoices/${b.dataset.cancel}/cancel`, { method: 'POST', body: {} }); route(); }));
   }
 

@@ -54,7 +54,7 @@ export async function runKickoff(ctx, { projectId }) {
   const q = acceptedQuote(store, project);
   const msg = await llm.create({
     model: modelFor(store, pm),
-    max_tokens: 8000,
+    max_tokens: 16000,
     system: [{ type: 'text', text: pmSystem(s, pm, store.all('lessons')), cache_control: { type: 'ephemeral' } }],
     output_config: { effort: s.agentEffort, format: { type: 'json_schema', schema: PLAN_SCHEMA } },
     messages: [{
@@ -126,7 +126,7 @@ export async function runStandup(ctx) {
   } else {
     const msg = await llm.create({
       model: modelFor(store, pm),
-      max_tokens: 4000,
+      max_tokens: 8000,
       system: [{ type: 'text', text: pmSystem(s, pm, store.all('lessons')), cache_control: { type: 'ephemeral' } }],
       output_config: { effort: 'low' },
       messages: [{ role: 'user', content: `Write today's (${kstDate()}) stand-up report to the owner in Korean, under 15 lines: 1) what happened since yesterday, 2) today's priorities per project, 3) blockers or decisions the owner must make. Facts only from below.\n\nActive projects:\n${JSON.stringify(snap, null, 1)}\n\nLast 24h:\n${recent.join('\n') || '(nothing)'}` }],
@@ -159,10 +159,10 @@ export async function runRetro(ctx, { projectId }) {
   const designs = store.find('designs', (d) => d.projectId === project.id);
   const msg = await llm.create({
     model: modelFor(store, pm),
-    max_tokens: 6000,
+    max_tokens: 16000,
     system: [{ type: 'text', text: pmSystem(s, pm, store.all('lessons')), cache_control: { type: 'ephemeral' } }],
     output_config: { effort: s.agentEffort, format: { type: 'json_schema', schema: RETRO_SCHEMA } },
-    messages: [{ role: 'user', content: `Project retrospective in Korean for "${project.title}". Rounds: ${project.designRounds}, designs: ${designs.length}, average AD score: ${avg(designs.map((d) => d.review?.score).filter(Boolean))}, AD reworks: ${designs.reduce((t, d) => t + (d.reworks ?? 0), 0)}.\nPlan: ${JSON.stringify(project.plan?.milestones ?? [])}\n\nThread:\n${thread}\n\nGive what went well, what to improve, and at most 3 concrete rules the team should follow next time (each one sentence, actionable).` }],
+    messages: [{ role: 'user', content: `Project retrospective in Korean for "${project.title}". Client on record: ${(() => { const c = store.get('clients', project.clientId); return c ? `${c.name}${c.company ? ` / ${c.company}` : ''}` : '(unknown)'; })()} (names and facts on record are not invented). Rounds: ${project.designRounds}, designs: ${designs.length}, average AD score: ${avg(designs.map((d) => d.review?.score).filter(Boolean))}, AD reworks: ${designs.reduce((t, d) => t + (d.reworks ?? 0), 0)}.\nPlan: ${JSON.stringify(project.plan?.milestones ?? [])}\n\nThread:\n${thread}\n\nGive what went well, what to improve, and at most 3 concrete rules the team should follow next time (each one sentence, actionable).` }],
   }, 'pm_retro', { projectId, staffId: pm?.id });
   const r = jsonOf(msg);
   const report = store.insert('reports', {

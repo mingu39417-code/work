@@ -3,6 +3,7 @@
 
 import { runAccountManager, runSales } from './agent.mjs';
 import { runDesignJob } from './designer.mjs';
+import { runFinalFiles } from './finals.mjs';
 import { runKickoff, runStandup, runRetro, maintenance } from './pm.mjs';
 import { enqueueAgent } from './actions.mjs';
 import { BudgetError, MissingKeyError, RefusalError } from './claude.mjs';
@@ -12,6 +13,7 @@ const MAX_ATTEMPTS = 3;
 const HANDLERS = {
   agent: (ctx, p) => runAccountManager(ctx, p),
   design: (ctx, p) => runDesignJob(ctx, p),
+  final_files: (ctx, p) => runFinalFiles(ctx, p),
   sales: (ctx, p) => runSales(ctx, p),
   kickoff: (ctx, p) => runKickoff(ctx, p),
   standup: (ctx) => runStandup(ctx),
@@ -50,6 +52,7 @@ export async function runJob(ctx, job) {
     store.update('jobs', job.id, { status: 'failed', error: err.message, finishedAt: new Date().toISOString() });
     store.alert('urgent', `자동 처리 실패 — 확인이 필요합니다: ${err.message}`, meta);
     if (job.kind === 'design') enqueueAgent(store, job.payload.projectId, { kind: 'design_failed', error: err.message });
+    if (job.kind === 'final_files') store.update('designs', job.payload.designId, { finalStatus: 'failed', finalError: err.message });
   }
 }
 

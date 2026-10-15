@@ -5,6 +5,7 @@ import { mailer } from './mailer.mjs';
 import crypto from 'node:crypto';
 import { renderContract } from './contract.mjs';
 import { assign, projectStaff } from './staff.mjs';
+import { emailDelivery } from './finals.mjs';
 
 export const STATUSES = {
   inquiry: '문의',
@@ -13,7 +14,7 @@ export const STATUSES = {
   in_progress: '작업 중',
   review: '시안 검토 중',
   revision: '수정 중',
-  delivered: '납품 완료',
+  delivered: '최종 확정 · 잔금 대기',
   completed: '정산 완료',
   lost: '무산',
   on_hold: '보류',
@@ -66,8 +67,9 @@ export function enqueue(store, kind, payload = {}, { delayMs = 0, dedupe = null 
 }
 
 // 에이전트 작업은 프로젝트당 하나로 모읍니다. 대기 중인 작업이 있으면 사건만 덧붙입니다.
+// 단, 며칠 뒤로 예약된 후속 조치(followup)에는 붙이지 않습니다 — 붙이면 고객 답장이 그날까지 밀립니다.
 export function enqueueAgent(store, projectId, event, { delayMs = 0 } = {}) {
-  const existing = store.findOne('jobs', (j) => j.status === 'queued' && j.kind === 'agent' && j.payload.projectId === projectId);
+  const existing = store.findOne('jobs', (j) => j.status === 'queued' && j.kind === 'agent' && j.payload.projectId === projectId && !j.payload.followup);
   if (existing) {
     const events = [...existing.payload.events, event];
     return store.update('jobs', existing.id, { payload: { ...existing.payload, events } });
@@ -400,7 +402,7 @@ export function outreachBlocked(store, lead) {
     const since = Date.now() - 183 * 864e5;
     const client = store.findOne('clients', (c) => c.email === lead.email && !c.simulation);
     const recent = client && store.find('projects', (p) => p.clientId === client.id && ['completed', 'delivered'].includes(p.status) && Date.parse(p.updatedAt) >= since).length;
-    if (!recent) return '최근 6개월 안에 거래(납품 완료)한 기록이 이 주소에 없습니다. 수신 동의를 받은 경우에만 보낼 수 있습니다.';
+    if (!recent) return '최근 6개월 안에 거래(최종 확정 또는 정산)한 기록이 이 주소에 없습니다. 수신 동의를 받은 경우에만 보낼 수 있습니다.';
     return null;
   }
   return '광고성 메일을 보낼 법적 근거(수신 동의 또는 최근 6개월 거래)가 없습니다. 동의 없는 영업 메일은 정보통신망법 위반이라 보내지 않습니다.';
@@ -425,10 +427,11 @@ ${aiNotice(settings)}`,
 }
 
 // 자율 설정에 따라 바로 실행하거나 승인 대기열에 넣습니다.
-export async function gated(ctx, category, action, summary) {
+// forceApproval: 자율 설정과 상관없이 반드시 대표 승인을 받아야 할 때(예: AD 검수 미달 시안).
+export async function gated(ctx, category, action, summary, { forceApproval = false } = {}) {
   const { store } = ctx;
   const mode = store.settings.autonomy[category] ?? 'approve';
-  if (mode === 'auto') return executeAction(ctx, action);
+  if (mode === 'auto' && !forceApproval) return executeAction(ctx, action);
   const ap = store.insert('approvals', {
     category,
     action,
@@ -468,6 +471,9 @@ export async function approveDesignByClient(ctx, project, designId) {
   store.update('designs', d.id, { approved: true });
   await postMessage(ctx, project, { from: 'system', text: `고객이 시안 「${d.title}」을 최종 선택했습니다.` });
   store.log('deal', `시안 최종 선택: ${d.title} — ${project.title}`, { projectId: project.id });
+  // 확정과 동시에 디자이너가 납품용 원본(SVG · PNG)을 만들기 시작합니다 — 잔금이 들어올 즈음엔 준비되어 있도록.
+  store.update('designs', d.id, { finalStatus: 'queued' });
+  enqueue(store, 'final_files', { projectId: project.id, designId: d.id }, { dedupe: `final:${d.id}` });
   enqueueAgent(store, project.id, { kind: 'final_approved', designId: d.id });
   return true;
 }
@@ -501,24 +507,9 @@ export async function completeProject(ctx, project) {
   if (store.find('invoices', (i) => i.projectId === project.id && i.status === 'sent').length) return false;
   store.update('projects', project.id, { status: 'completed' });
   enqueue(store, 'retro', { projectId: project.id }, { dedupe: `retro:${project.id}` });
-  const designs = store.find('designs', (d) => d.projectId === project.id && d.shared);
-  const finals = designs.filter((d) => d.approved);
-  const files = (finals.length ? finals : designs.filter((d) => d.round === Math.max(...designs.map((x) => x.round)))).map((d) => ({
-    filename: `${d.title.replace(/[^\p{L}\p{N}_-]+/gu, '_').slice(0, 60) || 'design'}.${d.format}`,
-    content: d.code,
-    contentType: d.format === 'svg' ? 'image/svg+xml' : 'text/html',
-  }));
-  await postMessage(ctx, project, { from: 'system', text: '정산이 끝나 원본 파일을 받을 수 있습니다.' });
-  try {
-    const r = await emailClient(ctx, project, {
-      subject: emailSubject(store.settings, project, '최종 파일 납품'),
-      text: `작업이 모두 마무리되었습니다. 감사합니다!\n최종 파일 ${files.length}개를 첨부했습니다. 프로젝트 페이지에서도 언제든 받으실 수 있습니다.\n(첨부 파일은 생성형 AI를 활용해 제작되었습니다.)`,
-      attachments: files,
-    });
-    store.log('delivery', `${r.sent ? '납품 메일 발송' : '정산 완료 (메일 미발송)'} — 파일 ${files.length}개 — ${project.title}`, { projectId: project.id });
-  } catch (err) {
-    store.log('error', `납품 메일 발송 실패: ${err.message}`, { projectId: project.id });
-  }
+  const ready = store.find('designs', (d) => d.projectId === project.id && d.approved && d.finalStatus === 'ready').length > 0;
+  await postMessage(ctx, project, { from: 'system', text: ready ? '정산이 끝나 원본 파일(ZIP)을 받을 수 있습니다.' : '정산이 끝났습니다. 납품 파일을 마무리하는 대로 이 페이지와 메일로 보내드립니다.' });
+  await emailDelivery(ctx, store.get('projects', project.id));
   return true;
 }
 

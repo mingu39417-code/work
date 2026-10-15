@@ -114,3 +114,43 @@ test('거절(refusal)은 재시도하지 않고 대표에게 알립니다', asyn
   assert.equal(job.status, 'failed');
   assert.ok(ctx.store.findOne('alerts', (a) => /거절/.test(a.text)));
 });
+
+test('AD 검수를 통과하지 못한 시안은 자동 설정이어도 대표 승인 후에만 고객에게 갑니다', async () => {
+  let share = null;
+  const { ctx } = makeCtx((body, kind) => {
+    if (kind === 'account' && share) { const ids = share; share = null; return msg([toolUse('share_designs', { design_ids: ids, message: '시안입니다.' })]); }
+    return msg([text('완료')]);
+  });
+  const { store } = ctx;
+  store.updateSettings({ autonomy: { delivery: 'auto' } });
+  const project = await createInquiry(ctx, { name: 'A', email: 'a@a.kr', description: '로고 문의' });
+  for (const j of store.find('jobs', (j) => j.status === 'queued')) store.update('jobs', j.id, { status: 'done' });
+  store.update('projects', project.id, { autopilot: true });
+  const good = store.insert('designs', { projectId: project.id, round: 1, title: '좋은 시안', format: 'svg', code: '<svg></svg>', review: { score: 9 }, passedReview: true, shared: false });
+  const weak = store.insert('designs', { projectId: project.id, round: 1, title: '약한 시안', format: 'svg', code: '<svg></svg>', review: { score: 7 }, passedReview: false, shared: false });
+  share = [good.id, weak.id];
+  store.insert('jobs', { kind: 'agent', payload: { projectId: project.id, events: [{ kind: 'designs_ready', designIds: [good.id, weak.id] }] }, status: 'queued', attempts: 0, runAt: new Date(0).toISOString() });
+  await runJob(ctx, nextJob(store));
+  assert.equal(store.get('designs', weak.id).shared, false);
+  assert.equal(store.get('designs', good.id).shared, false, '함께 묶인 시안도 승인 전에는 나가지 않음');
+  const ap = store.findOne('approvals', (a) => a.status === 'pending' && a.category === 'delivery');
+  assert.ok(ap);
+  assert.match(ap.summary, /AD 검수 미달 1개/);
+});
+
+test('만들 수 없는 AI 파일을 약속하던 예전 기본 문구는 고치고, 대표가 직접 쓴 문구는 그대로 둡니다', async () => {
+  const { tmpDir } = await import('./helpers.mjs');
+  const { Store } = await import('../lib/store.mjs');
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const dir = tmpDir();
+  const first = new Store(dir);
+  first.updateSettings({ services: [
+    { ...first.settings.services[0], description: '시안 2종 + 수정 2회, AI/SVG/PNG 원본 제공' },
+    { ...first.settings.services[1], description: '대표가 직접 쓴 설명' },
+  ] });
+  const again = new Store(dir);
+  assert.equal(again.settings.services[0].description, '시안 2종 + 수정 2회, SVG(벡터) · PNG(투명 배경) 원본 제공');
+  assert.equal(again.settings.services[1].description, '대표가 직접 쓴 설명');
+  assert.ok(fs.existsSync(path.join(dir, 'db.json')));
+});

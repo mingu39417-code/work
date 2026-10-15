@@ -46,7 +46,7 @@ export function defaultSettings() {
       signature: '',
     },
     services: [
-      { id: 'logo', name: '로고 디자인', description: '시안 2종 + 수정 2회, AI/SVG/PNG 원본 제공', basePrice: 500000, minPrice: 350000, days: 7, revisions: 2 },
+      { id: 'logo', name: '로고 디자인', description: '시안 2종 + 수정 2회, SVG(벡터) · PNG(투명 배경) 원본 제공', basePrice: 500000, minPrice: 350000, days: 7, revisions: 2 },
       { id: 'sns', name: 'SNS 콘텐츠 (5장 세트)', description: '인스타그램 피드·카드뉴스 5장', basePrice: 250000, minPrice: 180000, days: 4, revisions: 2 },
       { id: 'banner', name: '배너 · 썸네일', description: '웹/광고 배너 1종 (사이즈 3개까지)', basePrice: 120000, minPrice: 80000, days: 2, revisions: 2 },
       { id: 'poster', name: '포스터 · 전단', description: 'A2/A3 인쇄용 1종', basePrice: 300000, minPrice: 220000, days: 5, revisions: 2 },
@@ -79,7 +79,7 @@ export function defaultSettings() {
       standupHour: 9,
       overdueReminderDays: 3,
     },
-    auth: { passwordHash: '' },
+    auth: { passwordHash: '', sessions: [] },
   };
 }
 
@@ -130,6 +130,10 @@ export class Store extends EventEmitter {
     let raw = {};
     if (fs.existsSync(this.file)) raw = JSON.parse(fs.readFileSync(this.file, 'utf8'));
     this.data = { settings: mergeDefaults(defaultSettings(), raw.settings) };
+    // 예전 기본 문구는 만들 수 없는 AI 파일을 약속했습니다. 대표가 고치지 않은 그대로라면 실제 납품 형식으로 바꿉니다.
+    for (const sv of this.data.settings.services ?? []) {
+      if (sv.description === '시안 2종 + 수정 2회, AI/SVG/PNG 원본 제공') sv.description = '시안 2종 + 수정 2회, SVG(벡터) · PNG(투명 배경) 원본 제공';
+    }
     for (const c of COLLECTIONS) this.data[c] = Array.isArray(raw[c]) ? raw[c] : [];
     this.save();
   }

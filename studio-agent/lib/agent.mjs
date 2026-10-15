@@ -214,7 +214,11 @@ async function runAccountTool(ctx, project, name, input) {
     }
 
     case 'share_designs':
-      return gated(ctx, 'delivery', { type: 'share_designs', projectId: project.id, ...input }, `시안 ${input.design_ids.length}개 공유`);
+    {
+      const below = input.design_ids.map((id) => store.get('designs', id)).filter((d) => d && d.passedReview === false);
+      const summary = `시안 ${input.design_ids.length}개 공유${below.length ? ` — AD 검수 미달 ${below.length}개 포함(${below.map((d) => `「${d.title}」 ${d.review?.score ?? '?'}/10`).join(', ')})` : ''}`;
+      return gated(ctx, 'delivery', { type: 'share_designs', projectId: project.id, ...input }, summary, { forceApproval: below.length > 0 });
+    }
 
     case 'schedule_followup': {
       const hours = Math.min(336, Math.max(1, Number(input.hours)));
@@ -242,22 +246,25 @@ async function runAccountTool(ctx, project, name, input) {
 }
 
 // ── 상태 요약(사용자 메시지) ─────────────────────────────────────
-function describeEvent(store, e) {
+function describeEvent(store, e, project) {
   switch (e.kind) {
     case 'new_inquiry': return 'A new inquiry arrived. Reply (clarify or quote) and record the brief.';
     case 'client_message': return 'The client sent new message(s). Respond.';
-    case 'quote_accepted': return store.settings.company.requireContract ? 'The client accepted the quote. The system sent them the service contract to sign in their portal. Thank them briefly and tell them to review and sign the contract; the deposit invoice comes after signing. Do not send an invoice yet.' : 'The client accepted the quote. Next step per policy (deposit invoice, or start work).';
+    // 연습 프로젝트는 계약서 · 계약금 없이 바로 작업합니다(acceptQuoteByClient · workAllowed 와 같은 기준).
+    case 'quote_accepted': if (project?.simulation) return 'The client accepted the quote. This is a practice run, so no contract or deposit is needed — thank them briefly and start the design work now.';
+      return store.settings.company.requireContract ? 'The client accepted the quote. The system sent them the service contract to sign in their portal. Thank them briefly and tell them to review and sign the contract; the deposit invoice comes after signing. Do not send an invoice yet.' : 'The client accepted the quote. Next step per policy (deposit invoice, or start work).';
     case 'contract_signed': return 'The client signed the service contract. Next step per policy: send the deposit invoice (or, if no deposit is required, start work).';
     case 'kickoff_done': return `The PM finished the kickoff and the schedule below is set. Share the key milestones and the expected first-concept date with the client in a short message.`;
     case 'invoice_overdue': return `Finance flagged invoice ${e.invoiceId} as overdue (due ${e.dueDate}). Send a short, polite payment reminder. Do not threaten; offer help if there is a problem.`;
     case 'milestone_overdue': return `The PM flagged milestone "${e.title}" as overdue (due ${e.due}). Decide what to do: if it is waiting on the client, gently ask them; if on the studio, apologize briefly with a new date and tell the owner via escalate_to_owner.`;
     case 'payment_received': {
       const inv = store.get('invoices', e.invoiceId);
-      return `The owner confirmed payment of invoice ${e.invoiceId} (${inv?.kind}, ${inv?.amount}). Thank the client briefly and continue (e.g. start the design round after a deposit).`;
+      const files = inv?.kind === 'final' ? store.find('designs', (d) => d.projectId === inv.projectId && d.approved).map((d) => d.finalStatus === 'ready' ? 'ready — the client can download them now' : 'still being prepared — they will be sent automatically when ready').join('; ') : '';
+      return `The owner confirmed payment of invoice ${e.invoiceId} (${inv?.kind}, ${inv?.amount}). Thank the client briefly and continue (e.g. start the design round after a deposit).${files ? ` Production files: ${files}.` : ''}`;
     }
     case 'designs_ready': return `The design round finished. New design ids: ${e.designIds.join(', ')}. Review notes are in the designs list. Present them to the client.`;
     case 'design_failed': return `The design round failed: ${e.error}. Decide whether to retry (start_design_round) or tell the owner.`;
-    case 'final_approved': return `The client gave final approval to design ${e.designId}. Wrap up: final invoice for the remaining balance and status delivered.`;
+    case 'final_approved': return `The client gave final approval to design ${e.designId}. Wrap up: final invoice for the remaining balance and status delivered. The designer is now preparing the production files (SVG + PNG in a ZIP); they unlock when the balance is paid.`;
     case 'client_paid_notice': return `The client says they paid invoice ${e.invoiceId}. Thank them and say the studio will confirm shortly (the owner confirms payments). Do not mark anything paid yourself.`;
     case 'followup': return `Scheduled follow-up: ${e.purpose}. Check whether it is still needed (the client may have replied) and act accordingly.`;
     case 'owner_instruction': return `The owner gave you an instruction: "${e.text}". Carry it out.`;
@@ -295,7 +302,7 @@ export function buildProjectContext(store, project, events) {
   return `Now: ${new Date().toISOString()} (owner works ${s.profile.workingHours})
 
 # Event(s) to handle
-${events.map((e) => `- ${describeEvent(store, e)}`).join('\n')}
+${events.map((e) => `- ${describeEvent(store, e, project)}`).join('\n')}
 
 # Project ${project.id}${project.simulation ? ' — SIMULATION (practice run; the owner plays the client)' : ''}
 - Title: ${project.title}
@@ -324,7 +331,7 @@ ${quotes.map((q) => `- ${q.id} [${q.status}] total ${q.total}: ${q.items.map((i)
 ${invoices.map((i) => `- ${i.id} [${i.status}] ${i.kind} ${i.amount} due ${i.dueDate}`).join('\n') || '(none)'}
 
 # Designs
-${designs.map((d) => `- ${d.id} round ${d.round} "${d.title}" (${d.format}) ${d.shared ? 'SHARED' : 'not shared yet'}${d.approved ? ' FINAL-APPROVED' : ''}. Rationale: ${d.rationale}${d.review ? ` | Art-director review: score ${d.review.score}/10. ${d.review.summary}` : ''}`).join('\n') || '(none)'}
+${designs.map((d) => `- ${d.id} round ${d.round} "${d.title}" (${d.format}) ${d.shared ? 'SHARED' : 'not shared yet'}${d.approved ? ' FINAL-APPROVED' : ''}${d.approved ? ` production files: ${d.finalStatus === 'ready' ? `ready (${(d.finalFiles ?? []).map((f) => f.purpose).join(', ')})` : d.finalStatus === 'failed' ? 'FAILED — tell the owner' : 'being prepared'}` : ''}${d.passedReview === false ? ' BELOW-BAR (failed art-director review; sharing it needs owner approval — tell the owner)' : ''}. Rationale: ${d.rationale}${d.review ? ` | Art-director review: score ${d.review.score}/10. ${d.review.summary}` : ''}`).join('\n') || '(none)'}
 
 # Pending owner approvals (do not repeat these)
 ${pending.map((a) => `- ${a.category}: ${a.summary}`).join('\n') || '(none)'}

@@ -107,7 +107,7 @@ function imageBlocks(store, project) {
   return blocks;
 }
 
-function briefText(store, project, job) {
+export function briefText(store, project, job) {
   const s = store.settings;
   const service = s.services.find((x) => x.id === project.serviceId);
   const client = store.get('clients', project.clientId);
@@ -199,6 +199,7 @@ export async function runDesignJob(ctx, job) {
     const copyText = copy ? `\n\n# Copy from the copywriter (use it verbatim; only adjust line breaks to fit)\n${JSON.stringify(copy, null, 1)}` : '';
     let feedback = '';
     let best = null;
+    let tooLong = false;
     const maxReworks = s.design.selfReview ? Math.max(0, Number(s.design.maxReworks ?? 2)) : 0;
     for (let attempt = 0; attempt <= maxReworks; attempt++) {
       store.log('design', `${designer?.name ?? '디자이너'}: ${round}차 시안 ${i + 1}/${directions.length} 「${dir.name}」 ${attempt ? `재작업 ${attempt}회차` : '제작'}`, { projectId: project.id });
@@ -213,10 +214,17 @@ export async function runDesignJob(ctx, job) {
           role: 'user',
           content: [
             ...images,
-            { type: 'text', text: `${brief}\n\n${base ? `${base}\n\n` : ''}# Direction from the art director\n${JSON.stringify(dir, null, 1)}${copyText}${feedback ? `\n\n# The art director sent your previous version back. Fix every point:\n${feedback}\n\n# Your previous version\n\`\`\`\n${best.code.slice(0, MAX_CODE_IN_CONTEXT)}\n\`\`\`` : ''}\n\nProduce the finished design file now. "code" is the complete ${dir.format.toUpperCase()} document. "rationale" is 2-3 sentences in the client's language explaining the idea. "title" is a short concept name in the client's language.` },
+            { type: 'text', text: `${brief}\n\n${base ? `${base}\n\n` : ''}# Direction from the art director\n${JSON.stringify(dir, null, 1)}${copyText}${feedback ? `\n\n# The art director sent your previous version back. Fix every point:\n${feedback}\n\n# Your previous version\n\`\`\`\n${best.code.slice(0, MAX_CODE_IN_CONTEXT)}\n\`\`\`` : ''}${tooLong ? '\n\n# Your last attempt was cut off because the file was far too long. Keep the same direction but make the file much more compact: draw the mark once in <defs> and reuse it with <use>, keep mockups to simple flat shapes, round coordinates to 1 decimal.' : ''}\n\nProduce the finished design file now. "code" is the complete ${dir.format.toUpperCase()} document. "rationale" is 2-3 sentences in the client's language explaining the idea. "title" is a short concept name in the client's language.` },
           ],
         }],
       }, 'design_make', { projectId: project.id, staffId: designer?.id });
+      // 너무 길어 잘리면 작업 전체(AD 방향 포함)를 다시 돌리지 않고, 이 시안만 더 간결하게 한 번 다시 만듭니다.
+      if (makeMsg.stop_reason === 'max_tokens' && !tooLong) {
+        tooLong = true;
+        store.log('design', `「${dir.name}」 파일이 너무 길어 잘렸습니다 — 더 간결하게 한 번 다시 만듭니다`, { projectId: project.id });
+        attempt--;
+        continue;
+      }
       const design = jsonOf(makeMsg);
       if (!looksValid(design.format, design.code)) throw new Error(`시안 "${dir.name}"의 ${design.format} 코드가 올바르지 않습니다`);
 
@@ -229,7 +237,7 @@ export async function runDesignJob(ctx, job) {
       const revMsg = await llm.stream({
         model: modelFor(store, ad),
         system: sys(ad),
-        max_tokens: 8000,
+        max_tokens: 32000,
         output_config: { ...effort, format: { type: 'json_schema', schema: REVIEW_SCHEMA } },
         messages: [{
           role: 'user',
@@ -237,7 +245,7 @@ export async function runDesignJob(ctx, job) {
         }],
       }, 'design_review', { projectId: project.id, staffId: ad?.id });
       const r = jsonOf(revMsg);
-      const candidate = { ...design, review: { score: r.score, summary: r.summary, issues: r.issues }, reworks: attempt };
+      const candidate = { ...design, review: { score: r.score, summary: r.summary, issues: r.issues }, reworks: attempt, passed: r.decision === 'approve' };
       if (!best || (best.review?.score ?? 0) <= r.score) best = candidate;
       if (r.decision === 'approve') {
         await say(ad, `[검수 통과] 「${design.title}」 ${r.score}/10 — ${r.summary}`);
@@ -259,6 +267,8 @@ export async function runDesignJob(ctx, job) {
       review: best.review,
       reworks: best.reworks,
       copy,
+      // AD 검수를 통과하지 못한 시안은 대표 승인 없이 고객에게 나가지 않습니다(gated 의 force).
+      passedReview: best.review ? best.passed === true : true,
       designerId: designer?.id ?? null,
       copywriterId: copy ? cw?.id ?? null : null,
       reviewerId: ad?.id ?? null,

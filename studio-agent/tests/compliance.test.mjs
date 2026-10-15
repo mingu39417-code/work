@@ -3,13 +3,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { makeCtx, msg, toolUse, text, tmpDir, fakeFactory, SVG } from './helpers.mjs';
+import { makeCtx, msg, toolUse, text, json, tmpDir, fakeFactory, SVG, LOGO } from './helpers.mjs';
 import { mailer } from '../lib/mailer.mjs';
 import { handleInbound, stripQuoted } from '../lib/inbox.mjs';
 import { runSales } from '../lib/agent.mjs';
 import { nextJob, runJob } from '../lib/scheduler.mjs';
 import {
-  createInquiry, executeAction, outreachBlocked, postMessage, markInvoicePaid, canDownload, acceptQuoteByClient,
+  createInquiry, executeAction, outreachBlocked, postMessage, markInvoicePaid, canDownload, acceptQuoteByClient, approveDesignByClient,
 } from '../lib/actions.mjs';
 import { createApp } from '../server.mjs';
 
@@ -109,24 +109,67 @@ test('Gmail: 고객 답장은 같은 프로젝트로, 처음 보는 메일은 �
   assert.equal(stripQuoted('네\nOn Tue, Oct 14 wrote:\n> old'), '네');
 });
 
-test('정산이 끝나야 원본을 받을 수 있고, 그때 납품 메일에 파일이 첨부됩니다', async (t) => {
+test('정산이 끝나야 원본을 받을 수 있고, 납품 파일(SVG · PNG ZIP)이 준비되면 메일로 갑니다', async (t) => {
   const sent = captureMail(t);
-  const { ctx } = makeCtx(() => msg([text('x')]), { policy: { requireDeposit: false } });
+  const { ctx, calls } = makeCtx((body, kind) => kind === 'final'
+    ? json({ files: [
+      { name: 'momo-symbol', purpose: '심볼 단독', svg: LOGO },
+      { name: 'broken', purpose: '깨진 파일', svg: '<svg>' },
+      { name: 'empty', purpose: '빈 파일', svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" width="10" height="10"></svg>' },
+    ], notes: '간판에는 SVG를 쓰세요.' })
+    : msg([text('x')]), { policy: { requireDeposit: false } });
   const { store } = ctx;
   addGmail(store);
   const p = await createInquiry(ctx, { name: '김', email: 'kim@x.kr', description: '로고' });
   const q = store.insert('quotes', { projectId: p.id, items: [], total: 500000, revisions: 2, status: 'sent' });
   await acceptQuoteByClient(ctx, p, q.id);
-  store.insert('designs', { projectId: p.id, round: 1, title: '시안 A', rationale: '', format: 'svg', code: SVG, shared: true, approved: true });
+  const d = store.insert('designs', { projectId: p.id, round: 1, title: '시안 A', rationale: '', format: 'svg', code: SVG, shared: true, review: { score: 8, issues: ['칩 간격 맞추기'] } });
+  await approveDesignByClient(ctx, store.get('projects', p.id), d.id);
+  const job = store.findOne('jobs', (j) => j.kind === 'final_files' && j.status === 'queued');
+  assert.ok(job, '확정과 동시에 납품 파일 작업이 예약됨');
   store.update('projects', p.id, { status: 'delivered' });
   assert.equal(canDownload(store, store.get('projects', p.id)), false, '청구 전에는 불가');
+
+  // 잔금이 먼저 들어와도 파일이 준비되기 전에는 메일을 보내지 않습니다
   const inv = store.insert('invoices', { projectId: p.id, kind: 'final', amount: 500000, status: 'sent' });
   await markInvoicePaid(ctx, inv.id);
   assert.equal(store.get('projects', p.id).status, 'completed');
   assert.equal(canDownload(store, store.get('projects', p.id)), true);
+  assert.equal(sent.filter((m) => /최종 파일 납품/.test(m.subject)).length, 0);
+
+  // 디자이너가 납품 파일을 만들면 — 깨진 파일 · 빈 파일은 걸러지고, 고객에게 알림 + ZIP 메일
+  await runJob(ctx, job);
+  const final = calls.find((c) => c.kind === 'final');
+  assert.match(JSON.stringify(final.body.messages), /칩 간격 맞추기/, 'AD 마감 지적을 함께 전달');
+  const ready = store.get('designs', d.id);
+  assert.equal(ready.finalStatus, 'ready');
+  assert.deepEqual(ready.finalFiles.map((x) => x.name), ['momo-symbol']);
+  assert.equal(ready.finalRejected.length, 2);
   const delivery = sent.find((m) => /최종 파일 납품/.test(m.subject));
   assert.equal(delivery.attachments.length, 1);
-  assert.equal(delivery.attachments[0].filename, '시안_A.svg');
+  assert.equal(delivery.attachments[0].filename, '시안_A.zip');
+  const z = delivery.attachments[0].content;
+  assert.equal(z.readUInt32LE(0), 0x04034b50, 'ZIP 파일');
+  for (const name of ['SVG/momo-symbol.svg', 'PNG/momo-symbol_512px.png', 'PNG/momo-symbol_2048px.png', 'README.txt', 'presentation/시안_A.svg']) {
+    assert.ok(z.includes(Buffer.from(name)), `ZIP에 ${name}`);
+  }
+  assert.ok(store.find('messages', (m) => m.projectId === p.id && /납품 파일이 준비되었습니다/.test(m.text)).length);
+  // 한 번만 보냅니다
+  const { emailDelivery } = await import('../lib/finals.mjs');
+  assert.equal((await emailDelivery(ctx, store.get('projects', p.id))).sent, false);
+});
+
+test('납품 파일 검사: 렌더링 · 빈 파일 · 외부 자원 · PNG 변환', async () => {
+  const { checkFinalSvg, renderPng, zip } = await import('../lib/finals.mjs');
+  assert.equal(checkFinalSvg(LOGO), null);
+  assert.match(checkFinalSvg('<svg></svg>'), /viewBox/);
+  assert.match(checkFinalSvg('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" width="10" height="10"></svg>'), /빈 파일/);
+  assert.match(checkFinalSvg('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><image href="https://x.com/a.png" width="10" height="10"/></svg>'), /외부/);
+  const { png, width } = renderPng(LOGO, 512);
+  assert.equal(width, 512);
+  assert.equal(png.readUInt32BE(0), 0x89504e47, 'PNG 파일');
+  const z = zip([{ name: '한글.txt', data: Buffer.from('안녕') }]);
+  assert.equal(z.readUInt32LE(z.length - 22), 0x06054b50, 'ZIP 끝 레코드');
 });
 
 test('계정 비밀번호는 암호화되어 저장되고 화면에 다시 나오지 않습니다', async (t) => {

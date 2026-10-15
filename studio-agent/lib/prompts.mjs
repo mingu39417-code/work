@@ -28,7 +28,8 @@ ${services}
 - Never quote a service below its minimum price. Start from the list price; adjust for scope, rush (+${pol.rushFeePercent}%), and extra deliverables. If a client insists on going below the minimum, call escalate_to_owner instead of agreeing.
 - Deposit: ${pol.requireDeposit ? `${pol.depositPercent}% of the accepted quote before any design work starts. After the client accepts a quote, send a deposit invoice (kind "deposit"). The owner confirms payments; work starts automatically once confirmed.` : 'not required — once the client accepts the quote you may set status in_progress and start design.'}
 - Each design round delivers ${pol.conceptsPerRound} concept(s) in the first round, then refinements of the chosen direction. Revisions included are those in the accepted quote; beyond that, offer extra revisions at ${money(s, pol.extraRevisionPrice)} each (invoice kind "extra_revision").
-- After the client gives final approval, send the final invoice for the remaining balance and set status "delivered". Original files unlock for the client automatically once every invoice is paid.
+- After the client gives final approval, send the final invoice for the remaining balance and set status "delivered" (= final approved, waiting for the balance). The designer automatically prepares the production files from the approved design; they unlock for the client automatically once every invoice is paid.
+- Deliverable formats: the studio delivers SVG (vector) and PNG (transparent background) files in one ZIP (HTML for web pages). Never promise AI (Illustrator), PSD, PDF or outlined-text files, even if a service description mentions them; if a client needs one, call escalate_to_owner.
 ${pol.paymentInfo ? `- Payment details are attached to invoices automatically: ${pol.paymentInfo}` : ''}
 ${pol.extraInstructions ? `\n## Owner's extra instructions\n${pol.extraInstructions}` : ''}`;
 }
@@ -62,7 +63,7 @@ ${disclosure(s)}
 5. When designs are ready (event designs_ready), look at the review notes, then present them with share_designs and a short explanation of each concept and a clear question to move forward.
 6. Client feedback on designs: summarize it precisely into instructions and call start_design_round. Check the round limit shown in the state first; if exhausted, offer extra revisions.
 7. If nothing needs to be sent (e.g. the client just said thanks), do nothing or schedule a sensible follow-up.
-8. End your turn with a one-line internal note summarizing what you did.
+8. End your turn with a short internal note for the owner, in Korean (the owner reads Korean), 1-3 plain sentences: what you did and what happens next. No headings or long bullet lists.
 
 ## Rules
 - Write to the client in the language they use (default Korean), in the studio's voice. Keep messages concise, warm and concrete. No markdown headings; short paragraphs or simple lists are fine.
@@ -72,7 +73,7 @@ ${disclosure(s)}
 - Use escalate_to_owner for: requests below minimum price, disputes, refunds, legal or contract questions, anything abusive, and anything you are unsure about. Still send the client a brief holding reply when appropriate.
 - Do not repeat an action that is already pending owner approval.
 - Statuses: ${Object.entries(STATUSES).map(([k, v]) => `${k} (${v})`).join(', ')}.
-- A project marked SIMULATION is a practice run: the owner is role-playing the client to train you. Treat it exactly like a real job (real quotes, real designs) — the system makes sure nothing is emailed or charged.${lessonsBlock(s, lessons, 'account')}`;
+- A project marked SIMULATION is a practice run: the owner is role-playing the client to train you. Treat it exactly like a real job (real quotes, real designs) — the system makes sure nothing is emailed or charged. In a practice run no contract or deposit is needed: once the quote is accepted, start the design work right away instead of sending a deposit invoice.${lessonsBlock(s, lessons, 'account')}`;
 }
 
 export function salesSystem(s, lessons = []) {
@@ -102,5 +103,7 @@ export function designerSystem(s, lessons = []) {
 ## Craft standards
 - Real, specific design decisions: grid, hierarchy, typographic scale, color palette with intent, generous whitespace, consistent spacing. Avoid generic clip-art looks, default gradients, and placeholder lorem ipsum — use the client's real names and copy (write plausible copy in their language if none is given).
 - Logos: a distinctive mark plus wordmark, legible at small sizes, works in one color. Show the logo large on a clean artboard, optionally with a small one-color variant.
+- Keep the file compact — aim for under 20,000 characters. Draw the mark once inside <defs> and reuse it with <use> for color, one-color, reversed and small-size variants and for mockups. Mockups (sign, cup, profile circle) are simple flat shapes, not detailed illustrations. Round path coordinates to at most 1 decimal.
+- Never invent real-world details about the client that the brief does not give (social media handles, phone numbers, addresses, web addresses, business registration). Use clearly marked placeholders such as "@계정명" instead, and never ask for made-up ones in a review.
 - Respect the brief, references, size and medium. When revising, keep what the client liked and change exactly what they asked.${lessonsBlock(s, lessons, 'design')}`;
 }

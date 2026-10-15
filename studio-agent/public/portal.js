@@ -12,7 +12,7 @@
       <p class="muted" style="margin:0">${esc(d.rationale)}</p>
       <div class="row" style="gap:6px">
         <a class="btn small" href="${base}/designs/${d.id}/raw" target="_blank" rel="noopener">크게 보기</a>
-        ${state.canDownload ? `<a class="btn small" href="${base}/designs/${d.id}/download">원본 받기</a>` : ''}
+        ${state.canDownload ? (d.approved ? (d.finalReady ? `<a class="btn small primary" href="${base}/designs/${d.id}/download">원본 받기 (ZIP · SVG/PNG)</a>` : '<span class="badge">납품 파일 준비 중</span>') : `<a class="btn small" href="${base}/designs/${d.id}/download">시안 파일 받기</a>`) : ''}
         ${!d.approved && !['delivered', 'completed'].includes(state.project.status) ? `<button class="btn small primary" data-approve="${d.id}">이 시안으로 확정</button>` : ''}
       </div>
     </div>`;

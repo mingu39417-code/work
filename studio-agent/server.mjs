@@ -20,6 +20,7 @@ import {
 import { mailAccount, mailer, GMAIL, accountAuth } from './lib/mailer.mjs';
 import { startInboxPoller } from './lib/inbox.mjs';
 import { ROLES, DEPARTMENTS, POSITIONS, ASSIGNED, deptOf, defaultPosition, busyStaff, staffLabel, loadOf, capacityOf, managerOf } from './lib/staff.mjs';
+import { packageZip, safeName } from './lib/finals.mjs';
 import { financeSummary } from './lib/pm.mjs';
 import { DEFAULT_CONTRACT } from './lib/contract.mjs';
 import { ImapFlow } from 'imapflow';
@@ -104,13 +105,21 @@ async function readJson(req) {
   }
 }
 
+// no-cache: 프로그램을 업데이트한 뒤에도 브라우저가 옛 화면 파일을 쓰지 않도록 매번 새 버전인지 확인합니다.
 function serveFile(res, file, extra = {}) {
   if (!fs.existsSync(file)) return send(res, 404, 'Not found');
-  send(res, 200, fs.readFileSync(file), { 'Content-Type': MIME[path.extname(file)] ?? 'application/octet-stream', ...extra });
+  send(res, 200, fs.readFileSync(file), { 'Content-Type': MIME[path.extname(file)] ?? 'application/octet-stream', 'Cache-Control': 'no-cache', ...extra });
 }
 
 // 시안(Claude가 만든 SVG/HTML)은 스크립트가 절대 실행되지 않도록 샌드박스로 내보냅니다.
 const DESIGN_CSP = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:";
+
+// 확정 시안의 '원본 받기'는 납품 ZIP(SVG · PNG)입니다. 아직 만드는 중이면 기다려 달라고 안내합니다.
+function serveDelivery(res, store, design) {
+  if (design.finalStatus !== 'ready') throw new HttpError(409, '납품 파일을 마무리하고 있습니다. 준비되면 이 페이지와 메일로 알려 드립니다.');
+  const name = `${safeName(design.title)}.zip`;
+  return send(res, 200, packageZip(store, design), { 'Content-Type': 'application/zip', 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(name)}` });
+}
 
 function serveDesign(res, design, download) {
   const ext = design.format === 'svg' ? 'svg' : 'html';
@@ -173,7 +182,7 @@ function portalView(store, project) {
       .find('messages', (m) => m.projectId === project.id && !m.internal)
       .map((m) => ({ id: m.id, from: m.from === 'client' ? 'client' : m.from === 'system' ? 'system' : 'studio', who: m.from === 'agent' && m.staffId ? staffLabel(store.get('staff', m.staffId)) : null, text: m.text, at: m.createdAt, designIds: m.designIds, quoteId: m.quoteId, invoiceId: m.invoiceId, attachments: m.attachments })),
     contract: (() => { const c = contractOf(store, project); return c ? { id: c.id, body: c.body, status: c.status, signerName: c.signerName ?? null, signedAt: c.signedAt ?? null } : null; })(),
-    designs: store.find('designs', (d) => d.projectId === project.id && d.shared).map((d) => ({ id: d.id, title: d.title, rationale: d.rationale, format: d.format, round: d.round, approved: d.approved })),
+    designs: store.find('designs', (d) => d.projectId === project.id && d.shared).map((d) => ({ id: d.id, title: d.title, rationale: d.rationale, format: d.format, round: d.round, approved: d.approved, finalReady: d.finalStatus === 'ready' })),
     simulation: Boolean(project.simulation),
     quotes: store.find('quotes', (q) => q.projectId === project.id && q.status !== 'superseded').map(({ id, items, total, timelineDays, revisions, terms, status }) => ({ id, items, total, timelineDays, revisions, terms, status })),
     invoices: store.find('invoices', (i) => i.projectId === project.id && i.status !== 'cancelled').map(({ id, kind, amount, description, dueDate, status, clientNotified }) => ({ id, kind, amount, description, dueDate, status, clientNotified: Boolean(clientNotified) })),
@@ -317,7 +326,6 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
   const store = new Store(dataDir ?? process.env.DATA_DIR ?? path.join(here, 'data'));
   const llm = createLLM(store, { factory: llmFactory });
   const ctx = { store, llm, running: null };
-  const sessions = new Map();
   const scheduler = startWorker ? startScheduler(ctx, { intervalMs: schedulerInterval }) : null;
   const inbox = startWorker ? startInboxPoller(ctx) : null;
   const sseClients = new Set();
@@ -335,10 +343,14 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
   }, 25e3);
   ping.unref();
 
+  // 로그인 세션은 data/ 에 해시로만 저장합니다 — 프로그램을 껐다 켜도 다시 로그인할 필요가 없습니다.
+  const sidHash = (sid) => crypto.createHash('sha256').update(String(sid)).digest('hex');
+  const liveSessions = () => (store.settings.auth.sessions ?? []).filter((x) => x.expires > Date.now());
+  const saveSessions = (list) => store.updateSettings({ auth: { sessions: list.slice(-20) } });
+
   function authed(req) {
     const sid = cookies(req).sid;
-    const sess = sid && sessions.get(sid);
-    return Boolean(sess && sess.expires > Date.now());
+    return Boolean(sid && liveSessions().some((x) => x.hash === sidHash(sid)));
   }
 
   function projectByToken(token) {
@@ -437,6 +449,7 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
         const d = store.get('designs', h[1]);
         if (!d || d.projectId !== project.id || !d.shared) throw new HttpError(404, '없음');
         if (h[2] === 'download' && !canDownload(store, project)) throw new HttpError(403, '원본 파일은 잔금 정산 후 받을 수 있습니다');
+        if (h[2] === 'download' && d.approved) return serveDelivery(res, store, d);
         return serveDesign(res, d, h[2] === 'download');
       }
       if (m === 'GET' && (h = /^\/uploads\/([\w.]+)$/.exec(sub))) {
@@ -483,7 +496,8 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       return login(res);
     }
     if (p === '/api/auth/logout' && m === 'POST') {
-      sessions.delete(cookies(req).sid);
+      const h = sidHash(cookies(req).sid);
+      saveSessions(liveSessions().filter((x) => x.hash !== h));
       return send(res, 200, { ok: true }, { 'Set-Cookie': 'sid=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0' });
     }
 
@@ -494,7 +508,7 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
 
   function login(res) {
     const sid = crypto.randomBytes(24).toString('base64url');
-    sessions.set(sid, { expires: Date.now() + 30 * 864e5 });
+    saveSessions([...liveSessions(), { hash: sidHash(sid), expires: Date.now() + 30 * 864e5 }]);
     return send(res, 200, { ok: true }, { 'Set-Cookie': `sid=${sid}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${30 * 86400}` });
   }
 
@@ -550,7 +564,9 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       const b = await readJson(req);
       if (!checkPassword(String(b.current ?? ''), store.settings.auth.passwordHash)) throw new HttpError(401, '현재 비밀번호가 다릅니다');
       if (String(b.next ?? '').length < 8) throw new HttpError(400, '새 비밀번호는 8자 이상');
-      store.updateSettings({ auth: { passwordHash: hashPassword(b.next) } });
+      // 비밀번호를 바꾸면 지금 이 브라우저만 남기고 다른 곳의 로그인은 끊습니다.
+      const mine = sidHash(cookies(req).sid);
+      store.updateSettings({ auth: { passwordHash: hashPassword(b.next), sessions: liveSessions().filter((x) => x.hash === mine) } });
       return send(res, 200, { ok: true });
     }
 
@@ -600,7 +616,17 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
     if (m === 'GET' && (g = /^\/api\/designs\/(\w+)\/(raw|download)$/.exec(p))) {
       const d = store.get('designs', g[1]);
       if (!d) throw new HttpError(404, '없음');
+      if (g[2] === 'download' && d.approved && d.finalStatus === 'ready') return serveDelivery(res, store, d);
       return serveDesign(res, d, g[2] === 'download');
+    }
+    // 대표: 납품 파일 다시 만들기(마음에 안 들거나 실패했을 때)
+    if (m === 'POST' && (g = /^\/api\/designs\/(\w+)\/final-files$/.exec(p))) {
+      const d = store.get('designs', g[1]);
+      if (!d || !d.approved) throw new HttpError(409, '고객이 최종 확정한 시안만 납품 파일을 만들 수 있습니다');
+      if (store.findOne('jobs', (j) => j.kind === 'final_files' && j.payload.designId === d.id && ['queued', 'running'].includes(j.status))) throw new HttpError(409, '이미 만들고 있습니다');
+      store.update('designs', d.id, { finalStatus: 'queued' });
+      enqueue(store, 'final_files', { projectId: d.projectId, designId: d.id });
+      return send(res, 200, { ok: true });
     }
     if (m === 'GET' && (g = /^\/api\/uploads\/([\w.]+)$/.exec(p))) return serveFile(res, path.join(store.uploadsDir, g[1]));
 

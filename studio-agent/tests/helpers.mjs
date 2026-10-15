@@ -30,6 +30,7 @@ export function kindOf(body) {
   if (props.includes('directions')) return 'directions';
   if (props.includes('copies')) return 'copy';
   if (props.includes('code')) return 'make';
+  if (props.includes('files')) return 'final';
   if (props.includes('decision')) return 'review';
   if (props.includes('milestones')) return 'kickoff';
   if (props.includes('went_well')) return 'retro';
@@ -71,4 +72,6 @@ export function makeCtx(respond, settings = {}) {
   return { ctx: { store, llm, running: null }, calls: fake.calls };
 }
 
+// 납품 파일용 — 배경 없이 그림만 있는 SVG
+export const LOGO = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200"><circle cx="100" cy="100" r="80" fill="#e7a07a"/><text x="100" y="110" text-anchor="middle" font-size="28" font-family="Pretendard, sans-serif">모모</text></svg>';
 export const SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600"><rect width="800" height="600" fill="#fff"/><text x="40" y="80">Logo</text></svg>';

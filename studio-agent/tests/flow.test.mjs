@@ -166,3 +166,38 @@ test('연달아 온 사건은 한 번의 에이전트 실행으로 모읍니다'
   assert.equal(jobs.length, 1);
   assert.deepEqual(jobs[0].payload.events.map((e) => e.kind), ['new_inquiry', 'client_message']);
 });
+
+test('며칠 뒤 후속 조치가 예약돼 있어도 고객 답장은 바로 처리합니다', async () => {
+  const { ctx } = makeCtx((body, kind) => account(body));
+  const { store } = ctx;
+  const project = await createInquiry(ctx, { name: 'A', email: 'a@a.kr', description: '배너 문의입니다' });
+  for (const j of store.find('jobs', (j) => j.status === 'queued')) store.update('jobs', j.id, { status: 'done' });
+  const later = new Date(Date.now() + 48 * 3600e3).toISOString();
+  store.insert('jobs', { kind: 'agent', payload: { projectId: project.id, followup: true, events: [{ kind: 'followup', purpose: '답 없으면 재연락' }] }, status: 'queued', attempts: 0, runAt: later });
+  enqueueAgent(store, project.id, { kind: 'client_message' });
+  const jobs = store.find('jobs', (j) => j.status === 'queued');
+  assert.equal(jobs.length, 2);
+  const now = jobs.find((j) => !j.payload.followup);
+  assert.deepEqual(now.payload.events.map((e) => e.kind), ['client_message']);
+  assert.ok(Date.parse(now.runAt) <= Date.now());
+  assert.equal(jobs.find((j) => j.payload.followup).runAt, later);
+});
+
+test('시안 파일이 너무 길어 잘리면 그 시안만 간결하게 다시 만듭니다 (AD 방향은 다시 안 함)', async () => {
+  const { ctx, calls } = makeCtx((body, kind, i) => {
+    if (kind === 'directions') return json({ directions: [{ name: '원형', idea: '원형 마크', palette: ['#6b3e26'], typography: '산세리프', layout: '중앙', format: 'svg' }] });
+    if (kind === 'make') return i === 0 ? msg([text('{"title":"잘린')], 'max_tokens') : json({ title: '시안', rationale: '설명', format: 'svg', code: SVG });
+    if (kind === 'review') return json({ score: 9, summary: '좋음', issues: [], decision: 'approve' });
+    return account(body);
+  }, { design: { copywriting: false } });
+  const { store } = ctx;
+  const project = await createInquiry(ctx, { name: 'A', email: 'a@a.kr', description: '로고 문의' });
+  store.update('projects', project.id, { simulation: true });
+  const { runDesignJob } = await import('../lib/designer.mjs');
+  await runDesignJob(ctx, { projectId: project.id, instructions: '로고', concepts: 1, baseDesignIds: [] });
+  assert.equal(calls.filter((c) => c.kind === 'directions').length, 1);
+  const makes = calls.filter((c) => c.kind === 'make');
+  assert.equal(makes.length, 2);
+  assert.match(JSON.stringify(makes[1].body.messages), /cut off because the file was far too long/);
+  assert.equal(store.find('designs', (d) => d.projectId === project.id).length, 1);
+});

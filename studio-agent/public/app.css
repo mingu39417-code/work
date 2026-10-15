@@ -5,6 +5,8 @@
   --text: #1b1a17;
   --muted: #6b6860;
   --line: #e2dfd8;
+  --field: #ffffff;
+  --field-line: #c9c5bb;
   --accent: #3b5bdb;
   --accent-ink: #ffffff;
   --ok: #2f9e44;
@@ -22,6 +24,8 @@
     --text: #ecebe6;
     --muted: #9c998f;
     --line: #33322e;
+    --field: #121211;
+    --field-line: #55534c;
     --accent: #7b93ff;
     --accent-ink: #0d0d0c;
     --shadow: none;
@@ -50,9 +54,9 @@ input, select, textarea, button { font: inherit; color: inherit; }
 input, select, textarea {
   width: 100%;
   padding: 9px 11px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--field-line);
   border-radius: 8px;
-  background: var(--surface);
+  background: var(--field);
 }
 textarea { resize: vertical; min-height: 80px; }
 input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

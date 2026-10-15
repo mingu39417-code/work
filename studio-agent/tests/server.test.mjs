@@ -110,3 +110,31 @@ test('외부 채널 연동은 토큰이 맞아야 하고, 기존 고객이면 �
   assert.equal(store.find('messages', (m) => m.projectId === a.projectId && m.from === 'client').length, 2);
   void call;
 });
+
+test('프로그램을 껐다 켜도 로그인이 유지되고, 비밀번호를 바꾸면 다른 곳의 로그인은 끊깁니다', async (t) => {
+  const dataDir = tmpDir();
+  const fake = fakeFactory(() => msg([text('ok')]));
+  const start = async () => {
+    const app = createApp({ dataDir, llmFactory: fake.factory, startWorker: false });
+    await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
+    return { app, base: `http://127.0.0.1:${app.server.address().port}` };
+  };
+  const req = (base, path, cookie, body) => fetch(base + path, {
+    method: body ? 'POST' : 'GET',
+    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  let { app, base } = await start();
+  const a = (await req(base, '/api/auth/setup', '', { password: 'correct horse' })).headers.get('set-cookie').split(';')[0];
+  const b = (await req(base, '/api/auth/login', '', { password: 'correct horse' })).headers.get('set-cookie').split(';')[0];
+  await app.close();
+
+  ({ app, base } = await start());
+  t.after(() => app.close());
+  assert.equal((await req(base, '/api/overview', a)).status, 200, '재시작 후에도 로그인 유지');
+  assert.ok(!JSON.stringify(app.ctx.store.settings).includes(a.split('=')[1]), '세션 값은 해시로만 저장');
+  assert.equal((await req(base, '/api/settings/password', a, { current: 'correct horse', next: 'battery staple' })).status, 200);
+  assert.equal((await req(base, '/api/overview', a)).status, 200, '바꾼 브라우저는 그대로');
+  assert.equal((await req(base, '/api/overview', b)).status, 401, '다른 브라우저는 로그아웃');
+});
