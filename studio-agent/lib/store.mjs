@@ -13,7 +13,7 @@ import { DEFAULT_CONTRACT } from './contract.mjs';
 export const COLLECTIONS = [
   'clients', 'projects', 'messages', 'designs', 'quotes', 'invoices',
   'approvals', 'jobs', 'activity', 'leads', 'alerts', 'usage', 'accounts', 'lessons',
-  'staff', 'reports', 'contracts',
+  'staff', 'reports', 'contracts', 'social_posts', 'social_comments',
 ];
 
 const ACTIVITY_LIMIT = 3000;
@@ -71,7 +71,11 @@ export function defaultSettings() {
       delivery: 'auto',
       invoice: 'auto',
       outreach: 'approve',
+      social_post: 'approve',
+      social_reply: 'auto',
     },
+    // SNS 영업(인스타그램 · Threads): 댓글 확인 주기와 시간당 답글 한도
+    social: { replies: true, syncMinutes: 10, maxRepliesPerHour: 30 },
     design: { selfReview: true, maxReworks: 2, copywriting: true },
     company: {
       requireContract: true,

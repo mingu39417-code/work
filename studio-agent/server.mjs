@@ -21,6 +21,7 @@ import { mailAccount, mailer, GMAIL, accountAuth, normalizeAppPassword, checkApp
 import { startInboxPoller } from './lib/inbox.mjs';
 import { ROLES, DEPARTMENTS, POSITIONS, ASSIGNED, deptOf, defaultPosition, busyStaff, staffLabel, loadOf, capacityOf, managerOf } from './lib/staff.mjs';
 import { packageZip, safeName } from './lib/finals.mjs';
+import { PLATFORMS, connectAccount, designJpeg, isPublicUrl, mediaUrl, canPostProject } from './lib/social.mjs';
 import { financeSummary } from './lib/pm.mjs';
 import { DEFAULT_CONTRACT } from './lib/contract.mjs';
 import { ImapFlow } from 'imapflow';
@@ -374,6 +375,12 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
     // ── 공개 API ──
     if (m === 'GET' && p === '/api/public/studio') return send(res, 200, publicSettings(store.settings));
     if (m === 'GET' && p === '/privacy') return send(res, 200, privacyPage(store.settings), { 'Content-Type': 'text/html; charset=utf-8' });
+    if (m === 'GET' && (g = /^\/m\/([\w-]{20,})\.jpg$/.exec(p))) {
+      const post = store.findOne('social_posts', (x) => x.mediaToken === g[1] && ['pending', 'queued', 'published', 'partial', 'failed'].includes(x.status));
+      const d = post?.designId && store.get('designs', post.designId);
+      if (!d || d.format !== 'svg') throw new HttpError(404, '없음');
+      return send(res, 200, designJpeg(d.code), { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400' });
+    }
     if (m === 'GET' && (g = /^\/u\/([\w-]+)$/.exec(p))) return serveFile(res, path.join(PUBLIC, 'unsubscribe.html'));
     if (m === 'POST' && p === '/api/public/unsubscribe') {
       rateLimit(req, 'unsub', 20);
@@ -421,7 +428,8 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
         return send(res, 200, { ok: true });
       }
       if (m === 'POST' && (h = /^\/quotes\/(\w+)\/accept$/.exec(sub))) {
-        if (!(await acceptQuoteByClient(ctx, project, h[1]))) throw new HttpError(409, '수락할 수 없는 견적입니다');
+        const b = await readJson(req);
+        if (!(await acceptQuoteByClient(ctx, project, h[1], { portfolio: b.portfolio === true, named: b.named === true }))) throw new HttpError(409, '수락할 수 없는 견적입니다');
         return send(res, 200, { ok: true });
       }
       if (m === 'POST' && (h = /^\/contracts\/(\w+)\/sign$/.exec(sub))) {
@@ -658,7 +666,7 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       if (g[2] === 'approve') {
         const action = { ...ap.action };
         // 대표가 문구를 고쳐서 승인할 수 있습니다.
-        for (const k of ['message', 'subject', 'body']) if (typeof b[k] === 'string' && b[k].trim()) action[k] = b[k];
+        for (const k of ['message', 'subject', 'body', 'threadsText', 'igCaption']) if (typeof b[k] === 'string' && b[k].trim()) action[k] = b[k];
         const result = await executeAction(ctx, action);
         store.update('approvals', ap.id, { status: result.startsWith('실패') ? 'failed' : 'approved', result, action, decidedAt: new Date().toISOString() });
         store.log('owner', `승인: ${ap.summary} → ${short(result)}`, { projectId: ap.projectId, leadId: ap.leadId });
@@ -666,6 +674,8 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       }
       store.update('approvals', ap.id, { status: 'rejected', feedback: b.feedback ?? '', decidedAt: new Date().toISOString() });
       store.log('owner', `반려: ${ap.summary}${b.feedback ? ` — ${short(b.feedback)}` : ''}`, { projectId: ap.projectId, leadId: ap.leadId });
+      if (ap.action?.type === 'social_publish') { store.update('social_posts', ap.action.postId, { status: 'cancelled', error: `대표 반려${b.feedback ? `: ${b.feedback}` : ''}` }); return send(res, 200, { ok: true }); }
+      if (ap.action?.type === 'social_reply') { store.update('social_comments', ap.action.commentId, { status: 'ignored', note: `대표 반려${b.feedback ? `: ${b.feedback}` : ''}` }); return send(res, 200, { ok: true }); }
       if (ap.projectId && b.redo !== false) enqueueAgent(store, ap.projectId, { kind: 'approval_rejected', summary: ap.summary, feedback: b.feedback ?? '' });
       if (ap.leadId && b.redo !== false && b.feedback) enqueue(store, 'sales', { leadId: ap.leadId, instruction: `Your previous draft was rejected. Feedback: ${b.feedback}` });
       return send(res, 200, { ok: true });
@@ -712,6 +722,59 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
     // 계정 보관함 — 비밀번호는 암호화 저장, 화면에는 절대 다시 보여 주지 않습니다.
     const publicAccount = ({ secret, ...a }) => ({ ...a, hasSecret: Boolean(secret) });
     if (m === 'GET' && p === '/api/accounts') return send(res, 200, store.all('accounts').map(publicAccount));
+
+    // SNS 영업(인스타그램 · Threads)
+    if (m === 'GET' && p === '/api/social') {
+      const s = store.settings;
+      return send(res, 200, {
+        accounts: store.all('accounts').filter((a) => PLATFORMS[a.kind]).map(publicAccount),
+        publicUrl: s.publicUrl, publicUrlOk: isPublicUrl(s.publicUrl),
+        posts: store.all('social_posts').slice().reverse().slice(0, 30).map((x) => ({ ...x, project: x.projectId ? store.get('projects', x.projectId)?.title ?? null : null, imageUrl: x.designId ? `/api/designs/${x.designId}/raw` : null, publicImage: mediaUrl(s, x) })),
+        comments: store.all('social_comments').slice().reverse().slice(0, 50),
+        eligible: store.find('projects', (x) => !canPostProject(store, x) && !store.findOne('social_posts', (y) => y.projectId === x.id && y.status !== 'cancelled')).map((x) => ({ id: x.id, title: x.title, named: Boolean(x.portfolioNamed) })),
+        settings: s.social,
+      });
+    }
+    if (m === 'POST' && p === '/api/social/connect') {
+      const b = await readJson(req);
+      try {
+        const acct = await connectAccount(ctx, String(b.platform), b.token);
+        return send(res, 200, publicAccount(acct));
+      } catch (err) {
+        throw new HttpError(400, err.message);
+      }
+    }
+    if (m === 'POST' && p === '/api/social/posts') {
+      const b = await readJson(req);
+      if (b.projectId) {
+        const why = canPostProject(store, store.get('projects', b.projectId));
+        if (why) throw new HttpError(409, why);
+      } else if (!String(b.topic ?? '').trim()) throw new HttpError(400, '올릴 작업을 고르거나 주제를 적어 주세요');
+      if (!Object.keys(PLATFORMS).some((k) => store.findOne('accounts', (a) => a.kind === k && a.enabled !== false))) throw new HttpError(409, '먼저 인스타그램이나 Threads를 연결하세요');
+      enqueue(store, 'social_compose', b.projectId ? { projectId: b.projectId } : { topic: String(b.topic).slice(0, 1000) });
+      return send(res, 200, { ok: true });
+    }
+    if (m === 'POST' && (g = /^\/api\/social\/posts\/(\w+)\/retry$/.exec(p))) {
+      const post = store.get('social_posts', g[1]);
+      if (!post || !['failed', 'partial'].includes(post.status)) throw new HttpError(409, '다시 올릴 수 있는 글이 아닙니다');
+      store.update('social_posts', post.id, { status: 'queued' });
+      enqueue(store, 'social_publish', { postId: post.id });
+      return send(res, 200, { ok: true });
+    }
+    if (m === 'POST' && p === '/api/social/sync') {
+      if (!store.findOne('jobs', (j) => j.kind === 'social_sync' && ['queued', 'running'].includes(j.status))) enqueue(store, 'social_sync', {});
+      return send(res, 200, { ok: true });
+    }
+    // 대표가 고객에게 따로(서면 · 메일) 받은 포트폴리오 동의를 기록
+    if (m === 'POST' && (g = /^\/api\/projects\/(\w+)\/consent$/.exec(p))) {
+      const pr = store.get('projects', g[1]);
+      if (!pr) throw new HttpError(404, '없음');
+      const b = await readJson(req);
+      const portfolio = b.portfolio === true;
+      store.update('projects', pr.id, { portfolioConsent: portfolio, portfolioNamed: portfolio && b.named === true, consentAt: new Date().toISOString(), consentBy: 'owner', consentNote: String(b.note ?? '').slice(0, 200) });
+      store.log('owner', `포트폴리오 게시 동의 기록: ${portfolio ? (b.named ? '동의(업체명 포함)' : '동의(업체명 비공개)') : '동의 안 함'} — ${pr.title}`, { projectId: pr.id });
+      return send(res, 200, { ok: true });
+    }
     if (m === 'POST' && p === '/api/accounts') {
       const b = await readJson(req);
       if (b.kind !== 'gmail') throw new HttpError(400, '지금은 Gmail 계정만 등록할 수 있습니다');

@@ -31,6 +31,8 @@ export function kindOf(body) {
   if (props.includes('copies')) return 'copy';
   if (props.includes('code')) return 'make';
   if (props.includes('files')) return 'final';
+  if (props.includes('threads') && props.includes('instagram')) return 'social';
+  if (props.includes('items')) return 'triage';
   if (props.includes('decision')) return 'review';
   if (props.includes('milestones')) return 'kickoff';
   if (props.includes('went_well')) return 'retro';

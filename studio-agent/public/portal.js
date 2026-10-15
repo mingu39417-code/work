@@ -25,7 +25,10 @@
       <table>${q.items.map((i) => `<tr><td>${esc(i.name)}${i.description ? `<br><small>${esc(i.description)}</small>` : ''}</td><td>${money(i.price, cur)}</td></tr>`).join('')}
       <tr><td><strong>합계</strong></td><td><strong>${money(q.total, cur)}</strong></td></tr></table>
       <p class="muted" style="margin-top:8px">작업 기간 ${q.timelineDays ?? '-'}일 · 수정 ${q.revisions}회 포함${q.terms ? `<br>${esc(q.terms)}` : ''}</p>
-      ${q.status === 'sent' ? `<button class="btn primary" data-accept="${q.id}">견적 수락하기</button>` : ''}
+      ${q.status === 'sent' ? `<div class="stack" style="gap:6px;margin:8px 0">
+        <label style="display:flex;gap:8px;align-items:flex-start;font-size:0.92rem"><input type="checkbox" id="c-portfolio" style="width:auto;margin-top:3px"> <span>(선택) 완성된 작업물을 ${esc(state.studio.studioName)}의 포트폴리오 · 인스타그램 · Threads에 소개하는 것에 동의합니다. 동의하지 않아도 작업에는 아무 영향이 없습니다.</span></label>
+        <label style="display:flex;gap:8px;align-items:flex-start;font-size:0.92rem"><input type="checkbox" id="c-named" style="width:auto;margin-top:3px"> <span>(선택) 소개할 때 업체 · 브랜드 이름을 밝혀도 됩니다. (선택하지 않으면 '망원동의 작은 카페'처럼 이름 없이 소개합니다)</span></label>
+      </div><button class="btn primary" data-accept="${q.id}">견적 수락하기</button>` : ''}
     </div>`;
   }
 
@@ -94,9 +97,9 @@
     }
   }
 
-  async function act(url, okMsg) {
+  async function act(url, okMsg, body = {}) {
     try {
-      await api(url, { method: 'POST', body: {} });
+      await api(url, { method: 'POST', body });
       toast(okMsg);
       await load();
     } catch (err) {
@@ -107,7 +110,10 @@
   document.addEventListener('click', (e) => {
     const t = e.target.closest('button');
     if (!t) return;
-    if (t.dataset.accept && confirm('이 견적으로 진행할까요?')) act(`${base}/quotes/${t.dataset.accept}/accept`, '견적을 수락했습니다');
+    if (t.dataset.accept && confirm('이 견적으로 진행할까요?')) {
+      const portfolio = Boolean(document.querySelector('#c-portfolio')?.checked);
+      act(`${base}/quotes/${t.dataset.accept}/accept`, '견적을 수락했습니다', { portfolio, named: portfolio && Boolean(document.querySelector('#c-named')?.checked) });
+    }
     if (t.dataset.approve && confirm('이 시안으로 최종 확정할까요?')) act(`${base}/designs/${t.dataset.approve}/approve`, '최종 시안을 확정했습니다');
     if (t.dataset.paid && confirm('입금을 마치셨나요? 확인 후 진행됩니다.')) act(`${base}/invoices/${t.dataset.paid}/paid`, '알려 주셔서 감사합니다');
   });

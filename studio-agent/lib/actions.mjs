@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { renderContract } from './contract.mjs';
 import { assign, projectStaff } from './staff.mjs';
 import { emailDelivery } from './finals.mjs';
+import { aiLine, replySuffix, sendSocialReply, socialAccount, PLATFORMS } from './social.mjs';
 
 export const STATUSES = {
   inquiry: '문의',
@@ -28,6 +29,8 @@ export const AUTONOMY_LABELS = {
   delivery: '시안 · 결과물 공유',
   invoice: '청구서 발송',
   outreach: '영업 메일 (신규 고객 발굴)',
+  social_post: 'SNS 게시 (인스타그램 · Threads)',
+  social_reply: 'SNS 댓글 답글',
 };
 
 export function studioName(settings) {
@@ -370,6 +373,29 @@ export async function executeAction(ctx, action) {
       return sent ? '이메일로 보냈습니다.' : 'Gmail이 등록되지 않아 직접 보낼 수 있도록 대시보드에 저장했습니다.';
     }
 
+    case 'social_publish': {
+      const post = store.get('social_posts', action.postId);
+      if (!post || post.status !== 'pending') return '실패: 이미 처리된 글입니다.';
+      // 대표가 고친 문구도 AI 활용 표시는 반드시 남깁니다.
+      const keep = (t, limit) => { const line = aiLine(s); const x = String(t ?? '').trim(); return x.includes(line) ? x.slice(0, limit) : `${x.slice(0, limit - line.length - 2)}\n\n${line}`; };
+      store.update('social_posts', post.id, {
+        threadsText: keep(action.threadsText ?? post.threadsText, PLATFORMS.threads.textLimit),
+        igCaption: keep(action.igCaption ?? post.igCaption, PLATFORMS.instagram.textLimit),
+        status: 'queued',
+      });
+      enqueue(store, 'social_publish', { postId: post.id }, { dedupe: `social_publish:${post.id}` });
+      return '게시를 시작했습니다. 결과는 SNS 화면에서 확인하세요.';
+    }
+
+    case 'social_reply': {
+      const c = store.get('social_comments', action.commentId);
+      if (!c) return '실패: 댓글을 찾을 수 없습니다.';
+      const suffix = replySuffix(s);
+      const text = String(action.message ?? c.draft ?? '').trim();
+      store.update('social_comments', c.id, { draft: text.includes(suffix.trim()) ? text : `${text}${suffix}` });
+      return sendSocialReply(ctx, c.id);
+    }
+
     default:
       return `알 수 없는 동작: ${action.type}`;
   }
@@ -445,13 +471,15 @@ export async function gated(ctx, category, action, summary, { forceApproval = fa
 }
 
 // ── 고객 · 대표 이벤트 ───────────────────────────────────────────
-export async function acceptQuoteByClient(ctx, project, quoteId) {
+// consent: 고객이 견적 수락 때 고른 포트폴리오 게시 동의(선택) — { portfolio, named }
+export async function acceptQuoteByClient(ctx, project, quoteId, consent = {}) {
   const { store } = ctx;
   const q = store.get('quotes', quoteId);
   if (!q || q.projectId !== project.id || q.status !== 'sent') return false;
   store.update('quotes', q.id, { status: 'accepted', acceptedAt: new Date().toISOString() });
-  store.update('projects', project.id, { status: 'accepted' });
-  await postMessage(ctx, project, { from: 'system', text: `고객이 견적(${money(store.settings, q.total)})을 수락했습니다.` });
+  const portfolio = consent.portfolio === true;
+  store.update('projects', project.id, { status: 'accepted', portfolioConsent: portfolio, portfolioNamed: portfolio && consent.named === true, consentAt: new Date().toISOString(), consentBy: 'client' });
+  await postMessage(ctx, project, { from: 'system', text: `고객이 견적(${money(store.settings, q.total)})을 수락했습니다. 포트폴리오 게시: ${portfolio ? (consent.named === true ? '동의(업체명 표시 포함)' : '동의(업체명 비공개)') : '동의하지 않음'}` });
   if (!project.simulation && store.settings.company.requireContract) {
     for (const old of store.find('contracts', (c) => c.projectId === project.id && c.status === 'sent')) store.update('contracts', old.id, { status: 'void' });
     const client = store.get('clients', project.clientId);
@@ -507,6 +535,10 @@ export async function completeProject(ctx, project) {
   if (store.find('invoices', (i) => i.projectId === project.id && i.status === 'sent').length) return false;
   store.update('projects', project.id, { status: 'completed' });
   enqueue(store, 'retro', { projectId: project.id }, { dedupe: `retro:${project.id}` });
+  // 고객이 동의한 실제 작업이면 SNS 홍보 글을 준비합니다(올리기 전 대표 승인).
+  if (project.portfolioConsent && !project.simulation && Object.keys(PLATFORMS).some((p) => socialAccount(store, p))) {
+    enqueue(store, 'social_compose', { projectId: project.id }, { dedupe: `social_compose:${project.id}` });
+  }
   const ready = store.find('designs', (d) => d.projectId === project.id && d.approved && d.finalStatus === 'ready').length > 0;
   await postMessage(ctx, project, { from: 'system', text: ready ? '정산이 끝나 원본 파일(ZIP)을 받을 수 있습니다.' : '정산이 끝났습니다. 납품 파일을 마무리하는 대로 이 페이지와 메일로 보내드립니다.' });
   await emailDelivery(ctx, store.get('projects', project.id));

@@ -4,6 +4,7 @@
 import { runAccountManager, runSales } from './agent.mjs';
 import { runDesignJob } from './designer.mjs';
 import { runFinalFiles } from './finals.mjs';
+import { composeSocialPost, publishSocialPost, syncSocial } from './social.mjs';
 import { runKickoff, runStandup, runRetro, maintenance } from './pm.mjs';
 import { enqueueAgent } from './actions.mjs';
 import { BudgetError, MissingKeyError, RefusalError } from './claude.mjs';
@@ -14,6 +15,9 @@ const HANDLERS = {
   agent: (ctx, p) => runAccountManager(ctx, p),
   design: (ctx, p) => runDesignJob(ctx, p),
   final_files: (ctx, p) => runFinalFiles(ctx, p),
+  social_compose: (ctx, p) => composeSocialPost(ctx, p),
+  social_publish: (ctx, p) => publishSocialPost(ctx, p),
+  social_sync: (ctx) => syncSocial(ctx),
   sales: (ctx, p) => runSales(ctx, p),
   kickoff: (ctx, p) => runKickoff(ctx, p),
   standup: (ctx) => runStandup(ctx),

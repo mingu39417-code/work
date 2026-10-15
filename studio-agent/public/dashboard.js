@@ -97,7 +97,7 @@
     $$('.side a').forEach((x) => x.classList.toggle('on', x.dataset.nav === ({ project: 'projects', practiceDetail: 'practice' }[view] ?? view)));
     const y = window.scrollY;
     try {
-      const fn = { overview, approvals, projects, project: () => projectView(b), sales, activity, settings, accounts, practice, practiceDetail: () => practiceDetail(b), org, reports, finance }[view];
+      const fn = { overview, approvals, projects, project: () => projectView(b), sales, activity, settings, accounts, social, practice, practiceDetail: () => practiceDetail(b), org, reports, finance }[view];
       if (fn) await fn();
       else $('#view').innerHTML = '<div class="empty">없는 화면입니다</div>';
     } catch (err) {
@@ -166,6 +166,16 @@
       return `<div class="field"><label>제목</label><input data-k="subject" value="${esc(act.subject)}"></div>
               <div class="field"><label>본문</label><textarea data-k="body" data-prefilled="1">${esc(act.body)}</textarea></div>`;
     }
+    if (act.type === 'social_publish') {
+      return `${act.designId ? `<div class="designs"><iframe class="design-frame" sandbox="" loading="lazy" src="/api/designs/${act.designId}/raw"></iframe></div>` : ''}
+        <div class="field"><label>Threads 글 (500자 이내 · 고쳐서 승인할 수 있습니다)</label><textarea data-k="threadsText" data-prefilled="1" rows="6">${esc(act.threadsText)}</textarea></div>
+        <div class="field"><label>인스타그램 캡션</label><textarea data-k="igCaption" data-prefilled="1" rows="8">${esc(act.igCaption)}</textarea></div>
+        <small class="muted">맨 아래 AI 활용 표시는 지워도 자동으로 다시 붙습니다.</small>`;
+    }
+    if (act.type === 'social_reply') {
+      return `<p><strong>@${esc(act.username)}</strong>: ${esc(act.comment)}</p>
+        <div class="field"><label>답글 (고쳐서 승인할 수 있습니다)</label><textarea data-k="message" data-prefilled="1">${esc(act.message)}</textarea></div>`;
+    }
     let extra = '';
     if (act.type === 'quote') extra = `<table class="table">${act.line_items.map((i) => `<tr><td>${esc(i.name)}</td><td style="text-align:right">${money(i.price, cur())}</td></tr>`).join('')}<tr><td><strong>합계 · ${act.timeline_days}일 · 수정 ${act.revisions_included}회</strong></td><td style="text-align:right"><strong>${money(act.total, cur())}</strong></td></tr></table>`;
     if (act.type === 'invoice') extra = `<p><strong>${INV_KIND[act.kind] ?? act.kind} ${money(act.amount, cur())}</strong> — ${esc(act.description)}</p>`;
@@ -194,7 +204,7 @@
       card.querySelector('[data-act="approve"]').onclick = async (e) => {
         e.target.disabled = true;
         try {
-          const r = await api(`/api/approvals/${card.dataset.id}/approve`, { method: 'POST', body: { message: val('message'), subject: val('subject'), body: val('body') } });
+          const r = await api(`/api/approvals/${card.dataset.id}/approve`, { method: 'POST', body: { message: val('message'), subject: val('subject'), body: val('body'), threadsText: val('threadsText'), igCaption: val('igCaption') } });
           toast(r.result);
         } catch (err) { toast(err.message); }
         route();
@@ -284,6 +294,7 @@
         <div class="stack">
           <div class="card"><h3>담당 · 일정</h3>
             <small>디자이너: ${p.designerId && d.staff[p.designerId] ? esc(d.staff[p.designerId].name) : '킥오프 때 배정'} · 계약서: ${d.contract ? (d.contract.status === 'signed' ? `서명 완료 (${esc(d.contract.signerName)}, ${d.contract.signedAt.slice(0, 10)})` : '서명 대기') : '없음'}</small>
+            <small>포트폴리오 · SNS 게시: ${p.portfolioConsent ? (p.portfolioNamed ? '동의 (업체명 표시 가능)' : '동의 (업체명 비공개)') : '동의 없음'}${p.consentBy === 'owner' ? ` — 대표 기록${p.consentNote ? `: ${esc(p.consentNote)}` : ''}` : ''} <button class="btn small" id="consent-edit">동의 기록</button></small>
             ${d.contract ? `<details style="margin-top:4px"><summary>계약서 보기</summary><div class="pre" style="max-height:260px;overflow:auto;font-size:0.85rem">${esc(d.contract.body)}</div></details>` : ''}
             <div class="list" style="margin-top:6px">${(p.plan?.milestones ?? []).map((m) => `<div class="item"><div class="item-row"><span>${m.done ? '✅' : m.due < new Date().toISOString().slice(0, 10) ? '⚠️' : '⬜'} ${esc(m.title)}</span><small>${esc(m.due)} · ${esc(m.owner)}</small></div></div>`).join('') || '<span class="muted">킥오프 전</span>'}</div></div>
           <div class="card"><h3>브리프</h3><p class="pre">${esc(p.brief || '아직 정리되지 않았습니다.')}</p>
@@ -306,6 +317,13 @@
     const patch = (body) => api(`/api/projects/${id}`, { method: 'PATCH', body });
     $('#autopilot').onchange = async (e) => { await patch({ autopilot: e.target.checked }); toast(e.target.checked ? '에이전트가 다시 응대합니다' : '자동 응대를 껐습니다. 직접 응대하세요.'); };
     $('#status').onchange = async (e) => { await patch({ status: e.target.value }); toast('상태를 바꿨습니다'); };
+    $('#consent-edit').onclick = async () => {
+      const choice = prompt('고객에게 따로(메일 · 서면) 받은 포트폴리오 게시 동의를 기록합니다.\n1 = 동의(업체명 비공개)\n2 = 동의(업체명 표시 가능)\n0 = 동의 없음', p.portfolioConsent ? (p.portfolioNamed ? '2' : '1') : '0');
+      if (choice === null || !['0', '1', '2'].includes(choice.trim())) return;
+      const note = choice.trim() === '0' ? '' : (prompt('어떻게 받은 동의인가요? (예: 10/20 메일로 동의)') ?? '');
+      await api(`/api/projects/${p.id}/consent`, { method: 'POST', body: { portfolio: choice.trim() !== '0', named: choice.trim() === '2', note } });
+      toast('기록했습니다'); route();
+    };
     $('#extra-round').onclick = async () => { await patch({ extraRounds: p.extraRounds + 1 }); toast('추가 수정 1회를 허용했습니다'); route(); };
     $('#copy-portal').onclick = async () => { await navigator.clipboard.writeText(d.portalUrl); toast('복사했습니다'); };
     $$('[data-m]').forEach((b) => (b.onclick = () => { sessionStorage.setItem('compose', b.dataset.m); route(); }));
@@ -495,9 +513,71 @@
     };
   }
 
+  // ── SNS (인스타그램 · Threads) ──
+  async function social() {
+    const d = await api('/api/social');
+    const acct = (k) => d.accounts.find((a) => a.kind === k);
+    const ST = { ok: ['ok', '연결됨'], error: ['bad', '오류'], expired: ['bad', '토큰 만료'] };
+    const POST_ST = { pending: ['warn', '승인 대기'], queued: ['accent', '올리는 중'], published: ['ok', '게시됨'], partial: ['warn', '일부만 게시'], failed: ['bad', '실패'], cancelled: ['', '취소'] };
+    const CM_ST = { new: ['warn', '대기'], drafted: ['warn', '답글 승인 대기'], replied: ['ok', '답함'], ignored: ['', '넘김'], escalated: ['bad', '대표 확인 필요'], failed: ['bad', '답글 실패'] };
+    const card = (k, name) => {
+      const a = acct(k);
+      return `<div class="card stack" data-platform="${k}">
+        <div class="item-row"><h3>${name} ${a ? `<small>${esc(a.address)}</small>` : ''}</h3>${a ? `<span class="badge ${ST[a.status]?.[0] ?? ''}">${ST[a.status]?.[1] ?? esc(a.status)}</span>` : '<span class="badge">연결 안 됨</span>'}</div>
+        ${a?.lastError ? `<p class="error-text">${esc(a.lastError)}</p>` : ''}
+        ${a ? `<small>토큰 만료 ${esc((a.tokenExpiresAt ?? '').slice(0, 10))} (자동 갱신) · 마지막 댓글 확인 ${a.lastCheckAt ? when(a.lastCheckAt) : '없음'}</small>` : ''}
+        <div class="row" style="align-items:flex-end"><div><label>${a ? '새 액세스 토큰 (바꿀 때만)' : '액세스 토큰'}</label><input data-token type="password" autocomplete="off" placeholder="Meta 개발자 앱에서 만든 토큰"></div>
+          <div style="flex:0 0 auto"><button class="btn primary" data-connect="${k}">${a ? '토큰 바꾸기' : '연결'}</button></div></div>
+      </div>`;
+    };
+    $('#view').innerHTML = `
+      <div class="page-head"><h1>SNS 영업</h1><button class="btn small" id="sync-now">지금 댓글 확인</button></div>
+      <p class="muted">Meta 공식 API로만 연결합니다. 고객이 동의한 작업만 소개하고, 모든 글과 답글에 AI 활용 표시가 붙습니다. 먼저 남에게 댓글 · DM을 보내는 영업은 하지 않습니다(약관 · 정보통신망법).</p>
+      <details class="card" style="margin-bottom:16px"><summary><strong>처음 연결하는 방법 (10~20분, 한 번만)</strong></summary>
+        <ol class="pre" style="white-space:normal;line-height:1.7">
+          <li>인스타그램 앱 → 설정 → 계정 유형을 <strong>프로페셔널(비즈니스 또는 크리에이터)</strong>로 바꿉니다. Threads는 같은 인스타그램 계정으로 만듭니다.</li>
+          <li><a href="https://developers.facebook.com/apps" target="_blank" rel="noopener">Meta for Developers</a>에서 로그인 → <strong>앱 만들기</strong>. 사용 사례에서 <strong>'Threads API 액세스'</strong>와 <strong>'인스타그램 메시지 및 콘텐츠 관리'</strong>를 고릅니다.</li>
+          <li>Threads: 앱 역할 → 역할 → <strong>Threads 테스터</strong>로 내 계정을 추가하고, Threads 앱(웹) 설정 → 계정 → 웹사이트 권한 → 초대에서 수락합니다. 권한 threads_basic · threads_content_publish · threads_read_replies · threads_manage_replies 를 켜고 <strong>사용자 토큰 생성</strong>을 눌러 나온 토큰을 아래에 붙여 넣습니다.</li>
+          <li>인스타그램: 'API 설정(인스타그램 로그인)'에서 내 계정을 추가하고 <strong>토큰 생성</strong> → 권한 instagram_business_basic · instagram_business_content_publishing · instagram_business_manage_comments 를 허용 → 나온 토큰을 붙여 넣습니다.</li>
+          <li>내 계정에만 쓰는 앱이라 Meta 앱 심사는 필요 없습니다. 토큰은 암호화해 이 컴퓨터에만 저장하고 60일마다 자동으로 새로 받습니다. 토큰을 채팅이나 메신저로 보내지 마세요.</li>
+        </ol></details>
+      ${d.publicUrlOk ? '' : `<div class="card alert" style="margin-bottom:16px"><strong>이미지 게시에는 외부 접속 주소가 필요합니다.</strong> Meta가 이미지를 직접 내려받는데, 지금 주소(${esc(d.publicUrl)})는 이 컴퓨터 안에서만 열립니다. 그동안 Threads는 글만 올리고, 인스타그램(이미지 필수)은 건너뜁니다. 외부에서 열리는 https 주소를 <a href="#/settings">설정</a>의 '공개 주소'에 넣으면 이미지도 올라갑니다.</div>`}
+      <div class="grid2" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:16px">${card('threads', 'Threads')}${card('instagram', '인스타그램')}</div>
+      <div class="card stack" style="margin-bottom:16px"><h2>홍보 글 만들기</h2>
+        <p class="muted">작업이 정산되면(고객 동의 시) 자동으로 만들어집니다. 직접 만들 수도 있습니다. 만든 글은 <a href="#/approvals">승인 대기</a>에서 확인 후 올라갑니다(설정에서 자동으로 바꿀 수 있음).</p>
+        <div class="row" style="align-items:flex-end">
+          <div><label>소개할 작업 (고객 동의 · 정산 완료)</label><select id="sp-project"><option value="">— 작업 없이 주제로 쓰기 —</option>${d.eligible.map((p) => `<option value="${p.id}">${esc(p.title)}${p.named ? '' : ' (업체명 비공개)'}</option>`).join('')}</select></div>
+          <div><label>주제 (작업 없이 쓸 때)</label><input id="sp-topic" placeholder="예: 온결 스튜디오 소개, 로고 의뢰 전에 준비하면 좋은 것"></div>
+          <div style="flex:0 0 auto"><button class="btn primary" id="sp-create">글 만들기</button></div>
+        </div></div>
+      <div class="card" style="margin-bottom:16px"><h2>게시물</h2><div class="list">${d.posts.map((x) => `<div class="item">
+          <div class="item-row"><span>${x.project ? `<a href="#/projects/${x.projectId}">${esc(x.project)}</a>` : esc(x.topic || '주제 글')}</span><span class="badge ${POST_ST[x.status]?.[0] ?? ''}">${POST_ST[x.status]?.[1] ?? esc(x.status)}</span></div>
+          <small class="pre">${esc((x.threadsText || '').slice(0, 160))}…</small>
+          <div>${Object.entries(x.results ?? {}).map(([k, r]) => `<small>${k === 'threads' ? 'Threads' : '인스타그램'}: ${r.permalink ? `<a href="${esc(r.permalink)}" target="_blank" rel="noopener">게시물 보기</a>` : r.id ? '게시됨' : r.skipped ? esc(r.skipped) : `<span class="error-text">${esc(r.error ?? '')}</span>`}</small><br>`).join('')}</div>
+          ${['failed', 'partial'].includes(x.status) ? `<button class="btn small" data-retry="${x.id}">다시 올리기</button>` : ''}
+        </div>`).join('') || '<div class="empty">아직 없습니다</div>'}</div></div>
+      <div class="card"><h2>댓글 · 답글</h2><div class="list">${d.comments.map((c) => `<div class="item">
+          <div class="item-row"><span>${c.platform === 'threads' ? 'Threads' : '인스타그램'} · <strong>@${esc(c.username)}</strong>: ${esc(c.text)}</span><span class="badge ${CM_ST[c.status]?.[0] ?? ''}">${CM_ST[c.status]?.[1] ?? esc(c.status)}</span></div>
+          ${c.reply ? `<small>↳ ${esc(c.reply)}</small>` : ''}${c.note ? `<small class="muted"> ${esc(c.note)}</small>` : ''}
+        </div>`).join('') || '<div class="empty">아직 없습니다</div>'}</div></div>`;
+    $$('[data-connect]').forEach((b) => (b.onclick = async () => {
+      const box = b.closest('[data-platform]');
+      const token = box.querySelector('[data-token]').value.trim();
+      if (!token) return toast('토큰을 붙여 넣으세요');
+      b.disabled = true;
+      try { const a = await api('/api/social/connect', { method: 'POST', body: { platform: b.dataset.connect, token } }); toast(`연결했습니다: ${a.address}`); } catch (err) { toast(err.message); }
+      route();
+    }));
+    $('#sp-create').onclick = async () => {
+      try { await api('/api/social/posts', { method: 'POST', body: { projectId: $('#sp-project').value || null, topic: $('#sp-topic').value } }); toast('카피라이터가 글을 쓰고 있습니다. 끝나면 승인 대기에 올라옵니다'); } catch (err) { toast(err.message); }
+    };
+    $$('[data-retry]').forEach((b) => (b.onclick = async () => { try { await api(`/api/social/posts/${b.dataset.retry}/retry`, { method: 'POST', body: {} }); toast('다시 올립니다'); route(); } catch (err) { toast(err.message); } }));
+    $('#sync-now').onclick = async () => { await api('/api/social/sync', { method: 'POST', body: {} }); toast('댓글을 확인합니다'); };
+  }
+
   // ── 계정 ──
   async function accounts() {
-    const list = await api('/api/accounts');
+    const list = (await api('/api/accounts')).filter((a) => a.kind === 'gmail');
     const STATUS = { ok: ['ok', '정상'], error: ['bad', '오류'], unverified: ['warn', '확인 전'] };
     $('#view').innerHTML = `
       <div class="page-head"><h1>계정</h1></div>
@@ -526,9 +606,7 @@
             <button class="btn small danger" data-act="del">삭제</button>
           </div>
         </div>`).join('') || '<div class="card empty">등록된 계정이 없습니다</div>'}</div>
-      <div class="card" style="margin-top:16px"><h2>SNS 계정</h2>
-        <p class="muted">아이디 · 비밀번호로 SNS에 로그인해 자동으로 DM · 팔로우 · 댓글을 하는 방식은 각 플랫폼 이용약관 위반(계정 정지)이고, 동의 없는 광고 DM은 정보통신망법 위반이라 지원하지 않습니다.
-        인스타그램은 Meta 공식 API로 ① 포트폴리오 자동 게시 ② 먼저 연락해 온 DM · 댓글 자동 응대를 연결할 수 있습니다(준비 중 — 필요한 계정은 README 참고).</p></div>`;
+      <div class="card" style="margin-top:16px"><h2>SNS 계정</h2><p class="muted">인스타그램 · Threads 연결은 <a href="#/social">SNS 화면</a>에서 합니다(Meta 공식 API).</p></div>`;
     $('#acct-form').onsubmit = async (e) => {
       e.preventDefault();
       const body = { kind: 'gmail', ...Object.fromEntries(new FormData(e.target)) };
@@ -545,8 +623,13 @@
       card.querySelectorAll('input[data-k]').forEach((i) => (i.onchange = () => api(`/api/accounts/${id}`, { method: 'PATCH', body: { [i.dataset.k]: i.checked } })));
       card.querySelector('[data-act="test"]').onclick = async (e) => {
         e.target.disabled = true;
-        const r = await api(`/api/accounts/${id}/test`, { method: 'POST', body: {} });
-        toast(r.ok ? '연결 성공' : `연결 실패: ${r.error}`);
+        try {
+          // 새 앱 비밀번호 칸에 입력해 둔 값이 있으면 먼저 저장하고 확인합니다('비밀번호 변경'을 깜빡해도 되도록).
+          const pw = card.querySelector('[data-pw]').value;
+          if (pw) await api(`/api/accounts/${id}`, { method: 'PATCH', body: { password: pw } });
+          const r = await api(`/api/accounts/${id}/test`, { method: 'POST', body: {} });
+          toast(r.ok ? '연결 성공 — 이제 메일을 자동으로 주고받습니다' : `연결 실패: ${r.error}`);
+        } catch (err) { toast(err.message); }
         route();
       };
       card.querySelector('[data-act="pw"]').onclick = async () => {

@@ -190,6 +190,14 @@ export function maintenance(store, now = Date.now()) {
     enqueue(store, 'standup', { day: today });
   }
 
+  // SNS 댓글 확인(연결된 계정이 있을 때만)
+  const social = store.find('accounts', (a) => ['threads', 'instagram'].includes(a.kind) && a.enabled !== false && a.status !== 'expired');
+  const every = Math.max(5, Number(s.social?.syncMinutes) || 10) * 60e3;
+  if (social.length && now - Date.parse(s.social?.lastSyncAt ?? 0) >= every && !store.findOne('jobs', (j) => j.kind === 'social_sync' && ['queued', 'running'].includes(j.status))) {
+    store.updateSettings({ social: { lastSyncAt: new Date(now).toISOString() } });
+    enqueue(store, 'social_sync', {});
+  }
+
   for (const p of store.find('projects', (x) => !x.simulation && ACTIVE_STATUSES.includes(x.status))) {
     // 지난 마일스톤 (하루 한 번만 알림)
     const late = (p.plan?.milestones ?? []).find((m) => !m.done && m.due < today && m.owner !== 'finance');
