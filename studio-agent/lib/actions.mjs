@@ -29,7 +29,7 @@ export const AUTONOMY_LABELS = {
   delivery: '시안 · 결과물 공유',
   invoice: '청구서 발송',
   outreach: '영업 메일 (신규 고객 발굴)',
-  social_post: 'SNS 게시 (인스타그램 · Threads)',
+  social_post: 'SNS 게시 (인스타그램)',
   social_reply: 'SNS 댓글 답글',
 };
 
@@ -379,7 +379,6 @@ export async function executeAction(ctx, action) {
       // 대표가 고친 문구도 AI 활용 표시는 반드시 남깁니다.
       const keep = (t, limit) => { const line = aiLine(s); const x = String(t ?? '').trim(); return x.includes(line) ? x.slice(0, limit) : `${x.slice(0, limit - line.length - 2)}\n\n${line}`; };
       store.update('social_posts', post.id, {
-        threadsText: keep(action.threadsText ?? post.threadsText, PLATFORMS.threads.textLimit),
         igCaption: keep(action.igCaption ?? post.igCaption, PLATFORMS.instagram.textLimit),
         status: 'queued',
       });

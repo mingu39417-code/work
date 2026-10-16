@@ -5,8 +5,7 @@ import { runAccountManager, runSales } from './agent.mjs';
 import { runDesignJob } from './designer.mjs';
 import { runFinalFiles } from './finals.mjs';
 import { composeSocialPost, publishSocialPost, syncSocial, composeCarousel } from './social.mjs';
-import { composeBlogPost, checkPublished } from './blog.mjs';
-import { publishToWordPress } from './wordpress.mjs';
+import { composeBlogPost } from './blog.mjs';
 import { runKickoff, runStandup, runRetro, maintenance } from './pm.mjs';
 import { enqueueAgent } from './actions.mjs';
 import { BudgetError, MissingKeyError, RefusalError } from './claude.mjs';
@@ -22,8 +21,6 @@ const HANDLERS = {
   social_sync: (ctx) => syncSocial(ctx),
   ig_post: (ctx, p) => composeCarousel(ctx, p),
   blog_compose: (ctx, p) => composeBlogPost(ctx, p),
-  blog_check: (ctx) => checkPublished(ctx),
-  wp_publish: (ctx, p) => publishToWordPress(ctx, p),
   sales: (ctx, p) => runSales(ctx, p),
   kickoff: (ctx, p) => runKickoff(ctx, p),
   standup: (ctx) => runStandup(ctx),

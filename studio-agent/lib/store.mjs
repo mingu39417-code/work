@@ -74,12 +74,10 @@ export function defaultSettings() {
       social_post: 'approve',
       social_reply: 'auto',
     },
-    // SNS 영업(인스타그램 · Threads): 댓글 확인 주기와 시간당 답글 한도
-    social: { enabled: false, replies: true, syncMinutes: 10, maxRepliesPerHour: 30, threads: false, autoPost: true, perWeek: 3, publishHour: 11 },
-    // 네이버 블로그: 발행 대기 글을 몇 개 준비해 둘지, 내 블로그 아이디(발행 확인용 RSS)
-    blog: { enabled: true, blogId: '', keepReady: 3 },
-    // 완전 자동 발행 블로그(WordPress.com): 주 몇 회 · 몇 시 이후에 올릴지
-    wp: { enabled: false, autoPublish: true, perWeek: 3, publishHour: 10 },
+    // 인스타그램 영업: 댓글 확인 주기 · 시간당 답글 한도 · 카드뉴스 자동 게시 일정
+    social: { enabled: false, replies: true, syncMinutes: 10, maxRepliesPerHour: 30, autoPost: true, perWeek: 3, publishHour: 11 },
+    // 글 자동 작성: 인스타 카드뉴스용 글을 몇 개 미리 써 둘지
+    blog: { enabled: true, keepReady: 3 },
     design: { selfReview: true, maxReworks: 2, copywriting: true },
     company: {
       requireContract: true,

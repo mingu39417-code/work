@@ -1,8 +1,5 @@
-// 네이버 블로그 — 글은 직원이 전부 쓰고, 대표는 네이버에서 '발행'만 누릅니다.
-// 네이버는 블로그 글쓰기 API를 2020년에 종료했고, 아이디 · 비밀번호 자동 로그인은 약관 위반(저품질 · 정지 위험)이라 쓰지 않습니다.
-// 1) 카피라이터가 발행 대기 글을 미리 몇 개 써 둡니다(고객이 동의한 작업 사례 → 없으면 디자인 팁 · 스튜디오 소개 주제).
-// 2) 대시보드 '발행하러 가기' → 네이버 글쓰기 창이 열리면 크롬 확장(naver-helper)이 제목 · 본문 · 이미지 · 태그를 채웁니다.
-// 3) 대표가 '발행'을 누르면, 공개 RSS에서 그 글을 찾아 발행 완료로 표시합니다.
+// 글 자동 작성 — 카피라이터가 정해진 수만큼 글(제목 · 소제목 · 본문 · 표지 · 태그)을 미리 써 두고,
+// 인스타그램 카드뉴스로 정한 일정에 올립니다(lib/social.mjs · lib/igcards.mjs). 고객이 동의한 작업은 사례 글로 먼저 씁니다.
 
 import { renderPng } from './finals.mjs';
 import { enqueue, short, studioName } from './actions.mjs';
@@ -10,14 +7,8 @@ import { lead, modelFor, staffBlock } from './staff.mjs';
 import { jsonOf } from './claude.mjs';
 import { canPostProject } from './social.mjs';
 
-export const ARM_MINUTES = 15;
-
 export function blogAiLine(settings) {
   return `※ 이 글은 생성형 AI를 활용해 작성했고, ${studioName(settings)}가 검수했습니다.`;
-}
-
-export function writeUrl(blogId) {
-  return `https://blog.naver.com/${encodeURIComponent(blogId)}?Redirect=Write`;
 }
 
 const COMPOSE_SCHEMA = {
@@ -67,15 +58,6 @@ export function blogImagePng(store, post, n) {
   if (img.source === 'cover') return renderPng(coverSvg(store.settings, post.title), 1080).png;
   const d = store.get('designs', img.designId);
   return d && d.format === 'svg' ? renderPng(d.code, 1080).png : null;
-}
-
-// 네이버 편집기에 붙여 넣을 HTML(이미지는 확장이 파일로 따로 넣음)
-export function blockHtml(b) {
-  const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const paras = (t) => String(t).split(/\n{2,}/).map((p) => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('');
-  if (b.type === 'h') return `<p><b>${esc(b.text)}</b></p>`;
-  if (b.type === 'p') return paras(b.text);
-  return '';
 }
 
 // ── 글 쓰기 ───────────────────────────────────────────────────────────
@@ -152,39 +134,8 @@ Rules: only facts given above; no invented clients, numbers, reviews or awards; 
 export function keepBlogQueue(store) {
   const b = store.settings.blog ?? {};
   const ig = store.settings.social?.enabled && store.findOne('accounts', (a) => a.kind === 'instagram' && a.enabled !== false);
-  if (b.enabled === false || (!b.blogId && !store.settings.wp?.token && !ig)) return;
+  if (b.enabled === false || !ig) return;
   const ready = store.find('blog_posts', (x) => x.status === 'ready').length;
   const busy = store.findOne('jobs', (j) => j.kind === 'blog_compose' && ['queued', 'running'].includes(j.status));
   if (!busy && ready < Math.max(1, Number(b.keepReady) || 3)) enqueue(store, 'blog_compose', {});
-}
-
-// ── 발행 확인(네이버 공개 RSS) ─────────────────────────────────────────
-const norm = (t) => String(t).replace(/<!\[CDATA\[|\]\]>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, '').toLowerCase();
-export function parseRss(xml) {
-  const items = [];
-  for (const m of String(xml).matchAll(/<item>([\s\S]*?)<\/item>/g)) {
-    const pick = (tag) => (m[1].match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`)) ?? [])[1] ?? '';
-    items.push({ title: pick('title').replace(/<!\[CDATA\[|\]\]>/g, '').trim(), link: pick('link').replace(/<!\[CDATA\[|\]\]>/g, '').trim().split('?')[0], pubDate: pick('pubDate').trim() });
-  }
-  return items;
-}
-
-export async function checkPublished(ctx) {
-  const { store } = ctx;
-  const b = store.settings.blog ?? {};
-  const waiting = store.find('blog_posts', (x) => x.status === 'filled' || x.status === 'ready');
-  if (!b.blogId || !waiting.length) return 0;
-  const res = await (ctx.fetch ?? globalThis.fetch)(`https://rss.blog.naver.com/${encodeURIComponent(b.blogId)}.xml`);
-  if (!res.ok) throw new Error(`네이버 블로그 RSS를 읽지 못했습니다(HTTP ${res.status}). 블로그 아이디와 '외부 보내기 허용' 설정을 확인하세요.`);
-  const items = parseRss(await res.text());
-  let n = 0;
-  for (const post of waiting) {
-    const hit = items.find((i) => norm(i.title) === norm(post.title));
-    if (!hit) continue;
-    store.update('blog_posts', post.id, { status: 'published', publishedUrl: hit.link, publishedAt: new Date(Date.parse(hit.pubDate) || Date.now()).toISOString() });
-    store.log('blog', `블로그 발행 확인: ${post.title} — ${hit.link}`, { projectId: post.projectId });
-    n++;
-  }
-  store.updateSettings({ blog: { lastRssCheckAt: new Date().toISOString() } });
-  return n;
 }

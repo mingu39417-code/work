@@ -38,7 +38,7 @@
   async function start() {
     $('#app').classList.remove('hidden');
     META = await api('/api/meta');
-    // 꺼 둔 기능은 메뉴에서 숨깁니다(인스타그램 · Threads는 설정에서 다시 켤 수 있음)
+    // 꺼 둔 기능은 메뉴에서 숨깁니다
     $$('[data-nav="social"]').forEach((a) => (a.style.display = META.features?.social ? '' : 'none'));
     $$('[data-nav="blog"]').forEach((a) => (a.style.display = META.features?.blog === false ? 'none' : ''));
     await refreshOverview();
@@ -170,8 +170,7 @@
               <div class="field"><label>본문</label><textarea data-k="body" data-prefilled="1">${esc(act.body)}</textarea></div>`;
     }
     if (act.type === 'social_publish') {
-      return `${act.designId ? `<div class="designs"><iframe class="design-frame" sandbox="" loading="lazy" src="/api/designs/${act.designId}/raw"></iframe></div>` : ''}
-        <div class="field"><label>Threads 글 (500자 이내 · 고쳐서 승인할 수 있습니다)</label><textarea data-k="threadsText" data-prefilled="1" rows="6">${esc(act.threadsText)}</textarea></div>
+      return `${act.cardCount ? `<p><b>카드뉴스 ${act.cardCount}장</b> (게시 후 인스타그램에서 확인할 수 있습니다)</p>` : ''}${act.designId ? `<div class="designs"><iframe class="design-frame" sandbox="" loading="lazy" src="/api/designs/${act.designId}/raw"></iframe></div>` : ''}
         <div class="field"><label>인스타그램 캡션</label><textarea data-k="igCaption" data-prefilled="1" rows="8">${esc(act.igCaption)}</textarea></div>
         <small class="muted">맨 아래 AI 활용 표시는 지워도 자동으로 다시 붙습니다.</small>`;
     }
@@ -516,114 +515,63 @@
     };
   }
 
-  // ── 네이버 블로그 ──
+  // ── 글 보관함 (인스타 카드뉴스용 글) ──
   async function blog() {
     const d = await api('/api/blog');
     const s = d.settings ?? {};
-    const ST = { ready: ['accent', '발행 대기'], filled: ['warn', '글쓰기 창에 채움 · 발행 확인 중'], published: ['ok', '발행됨'], archived: ['', '보관'] };
-    const ready = d.posts.filter((x) => x.status === 'ready' || x.status === 'filled');
+    const ST = { ready: ['accent', '게시 대기'], archived: ['', '보관'] };
     const preview = (x) => {
       let n = 0;
       return x.blocks.map((b) => b.type === 'img' ? `<img src="/api/blog/${x.id}/images/${n++}.png" style="max-width:100%;border-radius:8px;margin:6px 0">` : b.type === 'h' ? `<h4 style="margin:12px 0 4px">${esc(b.text)}</h4>` : `<p class="pre" style="margin:4px 0">${esc(b.text)}</p>`).join('') + `<p class="muted">${x.tags.map((t) => '#' + esc(t)).join(' ')}</p>`;
     };
     $('#view').innerHTML = `
-      <div class="page-head"><h1>네이버 블로그</h1><button class="btn small" id="bl-more">글 하나 더 쓰기</button></div>
-      <p class="muted">글은 카피라이터가 전부 씁니다(제목 · 본문 · 표지 이미지 · 태그). 써 둔 글은 <a href="#/social">인스타그램</a>에 카드뉴스로 정한 일정대로 자동 게시됩니다. <b>네이버</b>는 글쓰기 API가 없어, <b>네이버에 발행하러 가기</b> → 도우미의 '제목 복사 · 본문 복사'로 Ctrl+V 두 번 → <b>발행</b>(20초). 네이버에 발행하면 20분 안에 자동으로 '발행됨'으로 바뀝니다.</p>
-      <div class="card stack" style="margin-bottom:16px;${META.features?.wp ? '' : 'display:none'}">
-        <div class="item-row"><h2>완전 자동 블로그 (WordPress.com)</h2><span class="badge ${d.wp.connected ? (d.wp.status === 'expired' ? 'bad' : 'ok') : ''}">${d.wp.connected ? (d.wp.status === 'expired' ? '연결 끊김' : '자동 발행 중') : '연결 전'}</span></div>
-        <p class="muted" style="margin:0">공식 API로 글 · 이미지 · 태그를 올리고 발행까지 사람 손 없이 합니다. ${d.wp.connected ? `연결된 블로그: <a href="${esc(d.wp.siteUrl)}" target="_blank" rel="noopener">${esc(d.wp.siteUrl)}</a>` : ''}</p>
-        ${d.wp.lastError ? `<p class="error-text">${esc(d.wp.lastError)}</p>` : ''}
-        <details ${d.wp.connected ? '' : 'open'}><summary><strong>처음 한 번만: 계정 · 앱 만들기 (10분)</strong> — 계정은 대표님이 직접 만드셔야 합니다</summary>
-          <ol style="line-height:1.9">
-            <li><a href="https://wordpress.com/start" target="_blank" rel="noopener">wordpress.com/start</a>에서 무료 계정과 사이트를 만듭니다(예: 주소 <code>ongyeol</code>). 유료 요금제는 필요 없습니다.</li>
-            <li><a href="https://developer.wordpress.com/apps/new/" target="_blank" rel="noopener">developer.wordpress.com/apps/new</a>에서 앱을 만듭니다. 칸마다 아래 값을 붙여 넣으세요.
-              <div class="stack" style="gap:4px;margin:6px 0">
-                ${[['Name', '온결 스튜디오 자동 발행'], ['Description', '온결 스튜디오 블로그 글 자동 발행'], ['Website URL', 'http://localhost:4300'], ['Redirect URLs', d.wp.redirectUri], ['Type', 'Web']].map(([k, v]) => `<div class="row" style="gap:6px;align-items:center;flex-wrap:nowrap"><small style="width:110px;flex:0 0 auto">${k}</small><code class="mono" style="flex:1">${esc(v)}</code><button class="btn small" style="flex:0 0 auto" data-copy="${esc(v)}">복사</button></div>`).join('')}
-              </div>
-              'Javascript Origins'는 비워 두고, 사람 확인 문제가 나오면 풀고 <b>Create</b>.</li>
-            <li>만든 앱 화면의 <b>Client ID</b>(숫자)와 <b>Client Secret</b>을 아래에 붙여 넣고 저장:
-              <div class="row" style="align-items:flex-end;margin-top:6px"><div><label>Client ID</label><input id="wp-cid" value="${esc(d.wp.clientId ?? '')}" placeholder="12345"></div><div><label>Client Secret ${d.wp.hasSecret ? '(저장됨 · 바꿀 때만)' : ''}</label><input id="wp-secret" type="password" autocomplete="off"></div><div style="flex:0 0 auto"><button class="btn" id="wp-save">저장</button></div></div></li>
-            <li><b>이 대시보드를 <code>http://localhost:4300/admin</code> 주소로 연 상태에서</b> 아래 <b>연결</b> → WordPress.com 화면에서 <b>Approve</b>. 끝나면 이 화면으로 돌아옵니다.</li>
-          </ol></details>
-        <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
-          <button class="btn primary" id="wp-connect">${d.wp.connected ? '다시 연결' : '연결'}</button>
-          <label class="switch"><input type="checkbox" id="wp-auto" ${d.wp.autoPublish !== false ? 'checked' : ''}> 자동 발행</label>
-          <span>주 <input id="wp-week" type="number" min="1" max="14" value="${d.wp.perWeek ?? 3}" style="width:60px;display:inline-block">회, <input id="wp-hour" type="number" min="0" max="23" value="${d.wp.publishHour ?? 10}" style="width:60px;display:inline-block">시 이후</span>
-          <button class="btn small" id="wp-sched">일정 저장</button>
-          ${d.wp.lastPublishedAt ? `<small class="muted">마지막 자동 발행 ${when(d.wp.lastPublishedAt)}</small>` : ''}
-        </div>
-      </div>
-      <h2 style="margin:8px 0">네이버 블로그 (반자동: 복사 · 붙여넣기)</h2>      <details class="card" style="margin-bottom:16px" ${s.blogId ? '' : 'open'}><summary><strong>처음 한 번만 설정 (5분)</strong></summary>
-        <ol style="line-height:1.8">
-          <li>내 블로그 아이디(blog.naver.com/ 뒤의 영문)를 넣고 저장: <input id="bl-id" value="${esc(s.blogId ?? '')}" placeholder="예: ongyeol_studio" style="max-width:220px"> <button class="btn small primary" id="bl-save">저장</button></li>
-          <li>크롬 주소창에 <code>chrome://extensions</code> 입력 → 오른쪽 위 <b>개발자 모드</b> 켜기 → <b>압축해제된 확장 프로그램을 로드합니다</b> → 이 폴더 선택:<br><code class="mono">${esc(d.extensionDir)}</code> <button class="btn small" id="bl-copy-dir">경로 복사</button></li>
-          <li>네이버에 로그인해 둡니다(비밀번호는 이 프로그램에 저장하지 않습니다).</li>
-          <li>블로그 관리 → 기본 설정 → 블로그 정보에서 <b>RSS 공개</b>(외부 보내기)가 켜져 있어야 발행 여부를 자동으로 확인할 수 있습니다.</li>
-        </ol></details>
-      <div class="card stack" style="margin-bottom:16px"><h2>발행 대기 ${ready.length}개 ${d.composing ? '<span class="badge warn">카피라이터가 쓰는 중</span>' : ''}</h2>
-        <p class="muted" style="margin:0">항상 ${s.keepReady ?? 3}개를 미리 써 둡니다 (<input id="bl-keep" type="number" min="1" max="10" value="${s.keepReady ?? 3}" style="width:60px;display:inline-block"> 개 <button class="btn small" id="bl-keep-save">바꾸기</button>). 고객이 동의한 작업은 사례 글로 먼저 씁니다.</p>
+      <div class="page-head"><h1>글 보관함</h1><button class="btn small" id="bl-more">글 하나 더 쓰기</button></div>
+      <p class="muted">카피라이터가 제목 · 소제목 · 본문 · 태그를 미리 써 두면, <a href="#/social">인스타그램</a>에 카드뉴스로 정한 일정마다 자동으로 올라갑니다. 고객이 동의한 작업은 사례 글로 먼저 씁니다.</p>
+      <div class="card stack" style="margin-bottom:16px"><h2>미리 써 둘 글 ${d.composing ? '<span class="badge warn">카피라이터가 쓰는 중</span>' : ''}</h2>
+        <p class="muted" style="margin:0">항상 <input id="bl-keep" type="number" min="1" max="10" value="${s.keepReady ?? 3}" style="width:60px;display:inline-block"> 개 <button class="btn small" id="bl-keep-save">바꾸기</button> 를 준비해 둡니다(인스타그램이 연결되어 있을 때).</p>
         <div class="row" style="align-items:flex-end"><div><label>직접 주제 주기 (선택)</label><input id="bl-topic" placeholder="예: 카페 창업 전에 로고 준비하는 법"></div><div style="flex:0 0 auto"><button class="btn" id="bl-topic-go">이 주제로 쓰기</button></div></div>
       </div>
       <div class="stack">${d.posts.filter((x) => x.status !== 'archived').map((x) => `
         <div class="card" data-post="${x.id}">
           <div class="item-row"><h3>${esc(x.title)}</h3><span class="badge ${ST[x.status]?.[0] ?? ''}">${ST[x.status]?.[1] ?? esc(x.status)}</span></div>
-          <small class="muted">${x.kind === 'case' ? `사례 글 · ${esc(x.project ?? '')}` : `주제 글 · ${esc(x.topic)}`} · 작성 ${esc(x.writer ?? '')} · ${when(x.createdAt)}${x.fillReport?.length && !x.fillOk ? ' · <span class="error-text">자동 입력 일부 실패</span>' : ''}</small>
-          ${x.publishedUrl ? `<p><a href="${esc(x.publishedUrl)}" target="_blank" rel="noopener">네이버 발행 글 보기</a></p>` : ''}
-          ${x.wp?.url ? `<p><a href="${esc(x.wp.url)}" target="_blank" rel="noopener">워드프레스 자동 발행 글 보기</a></p>` : x.wp?.error ? `<p class="error-text">워드프레스 발행 실패: ${esc(x.wp.error)}</p>` : ''}          <details style="margin-top:6px"><summary>미리 보기</summary>${preview(x)}</details>
-          <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
-            ${x.status !== 'published' ? `<button class="btn primary" data-arm="${x.id}">네이버에 발행하러 가기</button>` : ''}
-            ${d.wp.connected && !x.wp?.url ? `<button class="btn small" data-wp="${x.id}">워드프레스에 지금 발행</button>` : ''}            ${x.status === 'filled' ? `<button class="btn small" data-done="${x.id}">발행했어요</button>` : ''}
-            <button class="btn small" data-archive="${x.id}">보관</button>
-          </div>
-        </div>`).join('') || '<div class="card empty">아직 글이 없습니다. 블로그 아이디를 저장하면 카피라이터가 쓰기 시작합니다.</div>'}</div>`;
-    $$('[data-copy]').forEach((b) => (b.onclick = async () => { await navigator.clipboard.writeText(b.dataset.copy); toast('복사했습니다'); }));
-    $('#wp-save').onclick = async () => { try { await api('/api/wp/settings', { method: 'PUT', body: { clientId: $('#wp-cid').value, clientSecret: $('#wp-secret').value } }); toast('저장했습니다. 이제 연결을 누르세요'); route(); } catch (err) { toast(err.message); } };
-    $('#wp-connect').onclick = async () => { try { const r = await api('/api/wp/connect', { method: 'POST', body: {} }); location.href = r.url; } catch (err) { toast(err.message); } };
-    $('#wp-sched').onclick = async () => { await api('/api/wp/settings', { method: 'PUT', body: { autoPublish: $('#wp-auto').checked, perWeek: Number($('#wp-week').value), publishHour: Number($('#wp-hour').value) } }); toast('일정을 저장했습니다'); route(); };
-    $$('[data-wp]').forEach((b) => (b.onclick = async () => { try { await api(`/api/wp/publish/${b.dataset.wp}`, { method: 'POST', body: {} }); toast('워드프레스에 올리는 중입니다(1분 안팎)'); } catch (err) { toast(err.message); } }));    $('#bl-save').onclick = async () => { try { await api('/api/blog/settings', { method: 'PUT', body: { blogId: $('#bl-id').value } }); toast('저장했습니다. 곧 카피라이터가 글을 쓰기 시작합니다'); route(); } catch (err) { toast(err.message); } };
-    $('#bl-copy-dir').onclick = async () => { await navigator.clipboard.writeText(d.extensionDir); toast('경로를 복사했습니다'); };
+          <small class="muted">${x.kind === 'case' ? `사례 글 · ${esc(x.project ?? '')}` : `주제 글 · ${esc(x.topic)}`} · 작성 ${esc(x.writer ?? '')} · ${when(x.createdAt)}</small>
+          <details style="margin-top:6px"><summary>미리 보기</summary>${preview(x)}</details>
+          <div class="row" style="gap:6px;margin-top:8px"><button class="btn small" data-archive="${x.id}">보관</button></div>
+        </div>`).join('') || '<div class="card empty">아직 글이 없습니다. 인스타그램을 연결하면 카피라이터가 쓰기 시작합니다.</div>'}</div>`;
     $('#bl-keep-save').onclick = async () => { await api('/api/blog/settings', { method: 'PUT', body: { keepReady: Number($('#bl-keep').value) } }); toast('바꿨습니다'); route(); };
     $('#bl-more').onclick = async () => { await api('/api/blog/compose', { method: 'POST', body: {} }); toast('카피라이터가 새 글을 씁니다(1~2분)'); route(); };
     $('#bl-topic-go').onclick = async () => { const t = $('#bl-topic').value.trim(); if (!t) return toast('주제를 적어 주세요'); await api('/api/blog/compose', { method: 'POST', body: { topic: t } }); toast('그 주제로 씁니다(1~2분)'); route(); };
-    $$('[data-arm]').forEach((b) => (b.onclick = async () => {
-      try { const r = await api(`/api/blog/${b.dataset.arm}/arm`, { method: 'POST', body: {} }); window.open(r.url, '_blank', 'noopener'); toast('네이버 글쓰기 창에서 자동으로 채워집니다. 다 채워지면 발행을 누르세요'); } catch (err) { toast(err.message); }
-    }));
-    $$('[data-done]').forEach((b) => (b.onclick = async () => { const url = prompt('발행한 글 주소를 붙여 넣으면 함께 저장됩니다(비워도 됩니다)') ?? ''; await api(`/api/blog/${b.dataset.done}`, { method: 'PATCH', body: { status: 'published', publishedUrl: url } }); route(); }));
-    $$('[data-archive]').forEach((b) => (b.onclick = async () => { if (!confirm('이 글을 보관할까요? (발행 대기에서 빠집니다)')) return; await api(`/api/blog/${b.dataset.archive}`, { method: 'PATCH', body: { status: 'archived' } }); route(); }));
+    $$('[data-archive]').forEach((b) => (b.onclick = async () => { if (!confirm('이 글을 보관할까요? (게시 대기에서 빠집니다)')) return; await api(`/api/blog/${b.dataset.archive}`, { method: 'PATCH', body: { status: 'archived' } }); route(); }));
   }
 
-  // ── SNS (인스타그램 · Threads) ──
+  // ── 인스타그램 ──
   async function social() {
     const d = await api('/api/social');
-    const acct = (k) => d.accounts.find((a) => a.kind === k);
+    const a = d.accounts.find((x) => x.kind === 'instagram');
     const ST = { ok: ['ok', '연결됨'], error: ['bad', '오류'], expired: ['bad', '토큰 만료'] };
-    const POST_ST = { pending: ['warn', '승인 대기'], queued: ['accent', '올리는 중'], published: ['ok', '게시됨'], partial: ['warn', '일부만 게시'], failed: ['bad', '실패'], cancelled: ['', '취소'] };
+    const POST_ST = { pending: ['warn', '승인 대기'], queued: ['accent', '올리는 중'], published: ['ok', '게시됨'], failed: ['bad', '실패'], cancelled: ['', '취소'] };
     const CM_ST = { new: ['warn', '대기'], drafted: ['warn', '답글 승인 대기'], replied: ['ok', '답함'], ignored: ['', '넘김'], escalated: ['bad', '대표 확인 필요'], failed: ['bad', '답글 실패'] };
-    const card = (k, name) => {
-      const a = acct(k);
-      return `<div class="card stack" data-platform="${k}">
-        <div class="item-row"><h3>${name} ${a ? `<small>${esc(a.address)}</small>` : ''}</h3>${a ? `<span class="badge ${ST[a.status]?.[0] ?? ''}">${ST[a.status]?.[1] ?? esc(a.status)}</span>` : '<span class="badge">연결 안 됨</span>'}</div>
-        ${a?.lastError ? `<p class="error-text">${esc(a.lastError)}</p>` : ''}
-        ${a ? `<small>토큰 만료 ${esc((a.tokenExpiresAt ?? '').slice(0, 10))} (자동 갱신) · 마지막 댓글 확인 ${a.lastCheckAt ? when(a.lastCheckAt) : '없음'}</small>` : ''}
-        <div class="row" style="align-items:flex-end"><div><label>${a ? '새 액세스 토큰 (바꿀 때만)' : '액세스 토큰'}</label><input data-token type="password" autocomplete="off" placeholder="Meta 개발자 앱에서 만든 토큰"></div>
-          <div style="flex:0 0 auto"><button class="btn primary" data-connect="${k}">${a ? '토큰 바꾸기' : '연결'}</button></div></div>
-      </div>`;
-    };
     $('#view').innerHTML = `
       <div class="page-head"><h1>인스타그램 영업</h1><button class="btn small" id="sync-now">지금 댓글 확인</button></div>
       <p class="muted">Meta 공식 API로만 연결합니다. 고객이 동의한 작업만 소개하고, 모든 글과 답글에 AI 활용 표시가 붙습니다. 먼저 남에게 댓글 · DM을 보내는 영업은 하지 않습니다(약관 · 정보통신망법).</p>
-      <details class="card" style="margin-bottom:16px"><summary><strong>처음 연결하는 방법 (10~20분, 한 번만)</strong></summary>
-        <ol class="pre" style="white-space:normal;line-height:1.7">
-          <li>인스타그램 앱 → 설정 → 계정 유형을 <strong>프로페셔널(비즈니스 또는 크리에이터)</strong>로 바꿉니다. Threads는 같은 인스타그램 계정으로 만듭니다.</li>
-          <li><a href="https://developers.facebook.com/apps" target="_blank" rel="noopener">Meta for Developers</a>에서 로그인 → <strong>앱 만들기</strong>. 사용 사례에서 <strong>'Threads API 액세스'</strong>와 <strong>'인스타그램 메시지 및 콘텐츠 관리'</strong>를 고릅니다.</li>
-          <li>Threads: 앱 역할 → 역할 → <strong>Threads 테스터</strong>로 내 계정을 추가하고, Threads 앱(웹) 설정 → 계정 → 웹사이트 권한 → 초대에서 수락합니다. 권한 threads_basic · threads_content_publish · threads_read_replies · threads_manage_replies 를 켜고 <strong>사용자 토큰 생성</strong>을 눌러 나온 토큰을 아래에 붙여 넣습니다.</li>
-          <li>인스타그램: 'API 설정(인스타그램 로그인)'에서 내 계정을 추가하고 <strong>토큰 생성</strong> → 권한 instagram_business_basic · instagram_business_content_publishing · instagram_business_manage_comments 를 허용 → 나온 토큰을 붙여 넣습니다.</li>
-          <li>내 계정에만 쓰는 앱이라 Meta 앱 심사는 필요 없습니다. 토큰은 암호화해 이 컴퓨터에만 저장하고 60일마다 자동으로 새로 받습니다. 토큰을 채팅이나 메신저로 보내지 마세요.</li>
+      <details class="card" style="margin-bottom:16px" ${a ? '' : 'open'}><summary><strong>처음 연결하는 방법 (약 10분, 한 번만)</strong></summary>
+        <ol style="line-height:1.8">
+          <li>인스타그램 앱 → 설정 → 계정 유형을 <strong>프로페셔널(비즈니스 또는 크리에이터)</strong>로 바꿉니다.</li>
+          <li><a href="https://developers.facebook.com/apps" target="_blank" rel="noopener">Meta for Developers</a>에서 로그인 → <strong>앱 만들기</strong> → 사용 사례 <strong>'Instagram에서 메시지 및 콘텐츠 관리'</strong>.</li>
+          <li>사용 사례 → 맞춤 설정 → <strong>'Instagram 비즈니스 로그인으로 API 설정'</strong>에서 권한 instagram_business_basic · instagram_business_content_publish · instagram_business_manage_comments 를 켭니다.</li>
+          <li><strong>액세스 토큰 생성 → 계정 추가</strong> → 인스타그램 계정으로 허용(테스터 초대가 뜨면 인스타그램 웹 설정 → 앱 및 웹사이트 → 테스터 초대에서 수락).</li>
+          <li>나온 <strong>IG로 시작하는 토큰</strong>을 아래에 붙여 넣고 연결. 내 계정에만 쓰는 앱이라 심사는 필요 없고, 토큰은 암호화 저장 · 60일마다 자동 갱신됩니다. 채팅 · 메신저로 보내지 마세요.</li>
         </ol></details>
-      ${d.publicUrlOk ? '' : `<div class="card alert" style="margin-bottom:16px"><strong>이미지 게시에는 외부 접속 주소가 필요합니다.</strong> Meta가 이미지를 직접 내려받는데, 지금 주소(${esc(d.publicUrl)})는 이 컴퓨터 안에서만 열립니다. 그동안 Threads는 글만 올리고, 인스타그램(이미지 필수)은 건너뜁니다. 외부에서 열리는 https 주소를 <a href="#/settings">설정</a>의 '공개 주소'에 넣으면 이미지도 올라갑니다.</div>`}
-      <div class="grid2" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:16px">${META.features?.threads ? card('threads', 'Threads') : ''}${card('instagram', '인스타그램')}</div>
+      ${d.publicUrlOk || d.tunnelReady ? '' : `<div class="card alert" style="margin-bottom:16px"><strong>이미지 임시 공개 프로그램(cloudflared)이 없습니다.</strong> 명령 프롬프트에서 <code>winget install Cloudflare.cloudflared</code> 로 설치하면 게시할 때만 이미지 주소를 잠깐 열고 닫습니다.</div>`}
+      <div class="card stack" style="margin-bottom:16px" data-platform="instagram">
+        <div class="item-row"><h2>인스타그램 계정 ${a ? `<small>${esc(a.address)}</small>` : ''}</h2>${a ? `<span class="badge ${ST[a.status]?.[0] ?? ''}">${ST[a.status]?.[1] ?? esc(a.status)}</span>` : '<span class="badge">연결 안 됨</span>'}</div>
+        ${a?.lastError ? `<p class="error-text">${esc(a.lastError)}</p>` : ''}
+        ${a ? `<small>토큰 만료 ${esc((a.tokenExpiresAt ?? '').slice(0, 10))} (자동 갱신) · 마지막 댓글 확인 ${a.lastCheckAt ? when(a.lastCheckAt) : '없음'}</small>` : ''}
+        <div class="row" style="align-items:flex-end"><div><label>${a ? '새 액세스 토큰 (바꿀 때만)' : '액세스 토큰 (IG로 시작)'}</label><input data-token type="password" autocomplete="new-password" data-lpignore="true" placeholder="Meta 개발자 앱에서 만든 토큰"></div>
+          <div style="flex:0 0 auto"><button class="btn primary" data-connect="instagram">${a ? '토큰 바꾸기' : '연결'}</button></div></div>
+      </div>
       <div class="card stack" style="margin-bottom:16px"><h2>자동 게시 일정 (카드뉴스)</h2>
-        <p class="muted" style="margin:0">카피라이터가 써 둔 글을 여러 장 넘기는 카드뉴스로 만들어, 정한 횟수만큼 자동으로 올립니다. 이미지는 게시하는 1분 동안만 임시 주소로 열고 바로 닫습니다(대시보드는 공개되지 않음). 올리기 전 확인은 <a href="#/settings">설정</a>의 자율 수준 'SNS 게시'로 정합니다(자동 / 승인 후).</p>
+        <p class="muted" style="margin:0"><a href="#/blog">글 보관함</a>의 글을 여러 장 넘기는 카드뉴스로 만들어, 정한 횟수만큼 자동으로 올립니다. 이미지는 게시하는 1분 동안만 임시 주소로 열고 바로 닫습니다(대시보드는 공개되지 않음). 올리기 전 확인은 <a href="#/settings">설정</a>의 자율 수준 'SNS 게시'로 정합니다.</p>
         <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
           <label class="switch"><input type="checkbox" id="ig-auto" ${d.settings?.autoPost !== false ? 'checked' : ''}> 자동 게시</label>
           <span>주 <input id="ig-week" type="number" min="1" max="14" value="${d.settings?.perWeek ?? 3}" style="width:60px;display:inline-block">회, <input id="ig-hour" type="number" min="0" max="23" value="${d.settings?.publishHour ?? 11}" style="width:60px;display:inline-block">시 이후</span>
@@ -631,39 +579,39 @@
           <button class="btn small primary" id="ig-now">지금 카드뉴스 올리기</button>
           ${d.settings?.lastAutoPostAt ? `<small class="muted">마지막 자동 게시 ${when(d.settings.lastAutoPostAt)}</small>` : ''}
         </div>
-      </div>      <div class="card stack" style="margin-bottom:16px"><h2>홍보 글 만들기</h2>
-        <p class="muted">작업이 정산되면(고객 동의 시) 자동으로 만들어집니다. 직접 만들 수도 있습니다. 만든 글은 <a href="#/approvals">승인 대기</a>에서 확인 후 올라갑니다(설정에서 자동으로 바꿀 수 있음).</p>
+      </div>
+      <div class="card stack" style="margin-bottom:16px"><h2>포트폴리오 글 만들기</h2>
+        <p class="muted">고객이 동의한 작업은 정산되면 자동으로 만들어집니다. 직접 만들 수도 있습니다.</p>
         <div class="row" style="align-items:flex-end">
           <div><label>소개할 작업 (고객 동의 · 정산 완료)</label><select id="sp-project"><option value="">— 작업 없이 주제로 쓰기 —</option>${d.eligible.map((p) => `<option value="${p.id}">${esc(p.title)}${p.named ? '' : ' (업체명 비공개)'}</option>`).join('')}</select></div>
-          <div><label>주제 (작업 없이 쓸 때)</label><input id="sp-topic" placeholder="예: 온결 스튜디오 소개, 로고 의뢰 전에 준비하면 좋은 것"></div>
+          <div><label>주제 (작업 없이 쓸 때)</label><input id="sp-topic" placeholder="예: 온결 스튜디오 소개"></div>
           <div style="flex:0 0 auto"><button class="btn primary" id="sp-create">글 만들기</button></div>
         </div></div>
       <div class="card" style="margin-bottom:16px"><h2>게시물</h2><div class="list">${d.posts.map((x) => `<div class="item">
-          <div class="item-row"><span>${x.project ? `<a href="#/projects/${x.projectId}">${esc(x.project)}</a>` : esc(x.topic || '주제 글')}</span><span class="badge ${POST_ST[x.status]?.[0] ?? ''}">${POST_ST[x.status]?.[1] ?? esc(x.status)}</span></div>
-          <small class="pre">${esc((x.threadsText || '').slice(0, 160))}…</small>
-          <div>${Object.entries(x.results ?? {}).map(([k, r]) => `<small>${k === 'threads' ? 'Threads' : '인스타그램'}: ${r.permalink ? `<a href="${esc(r.permalink)}" target="_blank" rel="noopener">게시물 보기</a>` : r.id ? '게시됨' : r.skipped ? esc(r.skipped) : `<span class="error-text">${esc(r.error ?? '')}</span>`}</small><br>`).join('')}</div>
-          ${['failed', 'partial'].includes(x.status) ? `<button class="btn small" data-retry="${x.id}">다시 올리기</button>` : ''}
+          <div class="item-row"><span>${x.project ? `<a href="#/projects/${x.projectId}">${esc(x.project)}</a>` : esc(x.topic || '주제 글')}${x.cards?.length ? ` <span class="badge">카드 ${x.cards.length}장</span>` : ''}</span><span class="badge ${POST_ST[x.status]?.[0] ?? ''}">${POST_ST[x.status]?.[1] ?? esc(x.status)}</span></div>
+          <small class="pre">${esc((x.igCaption || '').slice(0, 160))}…</small>
+          ${(() => { const r = x.results?.instagram; return r ? `<div><small>${r.permalink ? `<a href="${esc(r.permalink)}" target="_blank" rel="noopener">게시물 보기</a>` : r.id ? '게시됨' : r.skipped ? esc(r.skipped) : `<span class="error-text">${esc(r.error ?? '')}</span>`}</small></div>` : ''; })()}
+          ${x.status === 'failed' ? `<button class="btn small" data-retry="${x.id}">다시 올리기</button>` : ''}
         </div>`).join('') || '<div class="empty">아직 없습니다</div>'}</div></div>
-      <div class="card"><h2>댓글 · 답글</h2><div class="list">${d.comments.map((c) => `<div class="item">
-          <div class="item-row"><span>${c.platform === 'threads' ? 'Threads' : '인스타그램'} · <strong>@${esc(c.username)}</strong>: ${esc(c.text)}</span><span class="badge ${CM_ST[c.status]?.[0] ?? ''}">${CM_ST[c.status]?.[1] ?? esc(c.status)}</span></div>
+      <div class="card"><h2>댓글</h2><div class="list">${d.comments.map((c) => `<div class="item">
+          <div class="item-row"><span><strong>@${esc(c.username)}</strong>: ${esc(c.text)}</span><span class="badge ${CM_ST[c.status]?.[0] ?? ''}">${CM_ST[c.status]?.[1] ?? esc(c.status)}</span></div>
           ${c.reply ? `<small>↳ ${esc(c.reply)}</small>` : ''}${c.note ? `<small class="muted"> ${esc(c.note)}</small>` : ''}
         </div>`).join('') || '<div class="empty">아직 없습니다</div>'}</div></div>`;
-    $$('[data-connect]').forEach((b) => (b.onclick = async () => {
-      const box = b.closest('[data-platform]');
-      const token = box.querySelector('[data-token]').value.trim();
+    $('[data-connect]').onclick = async (e) => {
+      const token = $('[data-token]').value.trim();
       if (!token) return toast('토큰을 붙여 넣으세요');
-      b.disabled = true;
-      try { const a = await api('/api/social/connect', { method: 'POST', body: { platform: b.dataset.connect, token } }); toast(`연결했습니다: ${a.address}`); } catch (err) { toast(err.message); }
+      e.target.disabled = true;
+      try { const r = await api('/api/social/connect', { method: 'POST', body: { platform: 'instagram', token } }); toast(`연결했습니다: ${r.address}`); } catch (err) { toast(err.message); }
       route();
-    }));
+    };
     $('#sp-create').onclick = async () => {
-      try { await api('/api/social/posts', { method: 'POST', body: { projectId: $('#sp-project').value || null, topic: $('#sp-topic').value } }); toast('카피라이터가 글을 쓰고 있습니다. 끝나면 승인 대기에 올라옵니다'); } catch (err) { toast(err.message); }
+      try { await api('/api/social/posts', { method: 'POST', body: { projectId: $('#sp-project').value || null, topic: $('#sp-topic').value } }); toast('카피라이터가 글을 쓰고 있습니다. 끝나면 게시되거나 승인 대기에 올라옵니다'); } catch (err) { toast(err.message); }
     };
     $$('[data-retry]').forEach((b) => (b.onclick = async () => { try { await api(`/api/social/posts/${b.dataset.retry}/retry`, { method: 'POST', body: {} }); toast('다시 올립니다'); route(); } catch (err) { toast(err.message); } }));
     $('#ig-now').onclick = async () => { try { const r = await api('/api/social/carousel', { method: 'POST', body: {} }); toast(`'${r.title}' 카드뉴스를 만들어 올립니다(1~2분)`); route(); } catch (err) { toast(err.message); } };
-    $('#ig-sched').onclick = async () => { await api('/api/social/settings', { method: 'PUT', body: { autoPost: $('#ig-auto').checked, perWeek: Number($('#ig-week').value), publishHour: Number($('#ig-hour').value) } }); toast('일정을 저장했습니다'); route(); };    $('#sync-now').onclick = async () => { await api('/api/social/sync', { method: 'POST', body: {} }); toast('댓글을 확인합니다'); };
+    $('#ig-sched').onclick = async () => { await api('/api/social/settings', { method: 'PUT', body: { autoPost: $('#ig-auto').checked, perWeek: Number($('#ig-week').value), publishHour: Number($('#ig-hour').value) } }); toast('일정을 저장했습니다'); route(); };
+    $('#sync-now').onclick = async () => { await api('/api/social/sync', { method: 'POST', body: {} }); toast('댓글을 확인합니다'); };
   }
-
   // ── 계정 ──
   async function accounts() {
     const list = (await api('/api/accounts')).filter((a) => a.kind === 'gmail');
@@ -695,7 +643,7 @@
             <button class="btn small danger" data-act="del">삭제</button>
           </div>
         </div>`).join('') || '<div class="card empty">등록된 계정이 없습니다</div>'}</div>
-      <div class="card" style="margin-top:16px"><h2>SNS 계정</h2><p class="muted">인스타그램 · Threads 연결은 <a href="#/social">SNS 화면</a>에서 합니다(Meta 공식 API).</p></div>`;
+      <div class="card" style="margin-top:16px"><h2>SNS 계정</h2><p class="muted">인스타그램 연결은 <a href="#/social">인스타그램 화면</a>에서 합니다(Meta 공식 API).</p></div>`;
     $('#acct-form').onsubmit = async (e) => {
       e.preventDefault();
       const body = { kind: 'gmail', ...Object.fromEntries(new FormData(e.target)) };

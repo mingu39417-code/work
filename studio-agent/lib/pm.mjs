@@ -10,7 +10,6 @@ import { jsonOf, textOf } from './claude.mjs';
 import { lead, assign, pickDesigner, projectStaff, modelFor, staffBlock, staffLabel } from './staff.mjs';
 import { profileBlock, lessonsBlock } from './prompts.mjs';
 import { keepBlogQueue } from './blog.mjs';
-import { wpDue } from './wordpress.mjs';
 import { igDue } from './social.mjs';
 import { calendarLine } from './calendar.mjs';
 
@@ -197,22 +196,15 @@ export function maintenance(store, now = Date.now()) {
     enqueue(store, 'standup', { day: today });
   }
 
-  // 네이버 블로그: 발행 대기 글을 미리 써 두고, 대표가 발행했는지 공개 RSS로 확인
+  // 글 자동 작성: 인스타 카드뉴스용 글을 미리 써 둡니다
   if (s.apiKey) keepBlogQueue(store);
   // 완전 자동 블로그: 차례가 되면 다음 글을 발행
   // 인스타그램 카드뉴스: 차례가 되면 다음 글을 카드로 만들어 게시
   const igNext = igDue(store, now);
   if (igNext) { store.updateSettings({ social: { lastAutoPostAt: new Date(now).toISOString() } }); enqueue(store, 'ig_post', { blogPostId: igNext.id }, { dedupe: `ig:${igNext.id}` }); }
-  const wpNext = s.wp?.enabled ? wpDue(store, now) : null;
-  if (wpNext) enqueue(store, 'wp_publish', { postId: wpNext.id }, { dedupe: `wp:${wpNext.id}` });
-  const waitingBlog = store.findOne('blog_posts', (x) => x.status === 'filled');
-  if (s.blog?.blogId && waitingBlog && now - Date.parse(s.blog?.lastRssCheckAt ?? 0) >= 20 * 60e3 && !store.findOne('jobs', (j) => j.kind === 'blog_check' && ['queued', 'running'].includes(j.status))) {
-    store.updateSettings({ blog: { lastRssCheckAt: new Date(now).toISOString() } });
-    enqueue(store, 'blog_check', {});
-  }
 
   // SNS 댓글 확인(연결된 계정이 있을 때만)
-  const social = store.find('accounts', (a) => ['threads', 'instagram'].includes(a.kind) && a.enabled !== false && a.status !== 'expired');
+  const social = store.find('accounts', (a) => a.kind === 'instagram' && a.enabled !== false && a.status !== 'expired');
   const every = Math.max(5, Number(s.social?.syncMinutes) || 10) * 60e3;
   if (s.social?.enabled && social.length && now - Date.parse(s.social?.lastSyncAt ?? 0) >= every && !store.findOne('jobs', (j) => j.kind === 'social_sync' && ['queued', 'running'].includes(j.status))) {
     store.updateSettings({ social: { lastSyncAt: new Date(now).toISOString() } });
