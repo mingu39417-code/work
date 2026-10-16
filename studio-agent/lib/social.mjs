@@ -72,6 +72,9 @@ export async function connectAccount(ctx, platform, rawToken) {
   if (!PLATFORMS[platform]) throw new Error('지원하지 않는 SNS입니다');
   const token = String(rawToken ?? '').trim();
   if (!/^\S{40,}$/.test(token)) throw new Error('Meta 개발자 앱에서 만든 액세스 토큰(긴 영문 · 숫자)을 붙여 넣어 주세요. 계정 비밀번호가 아닙니다.');
+  // 흔한 실수: 페이스북(그래프 API 탐색기)용 토큰을 넣은 경우 — 인스타그램 로그인용 토큰은 IG로 시작합니다.
+  if (platform === 'instagram' && /^EAA/.test(token)) throw new Error("페이스북(그래프 API 탐색기)용 토큰입니다. Meta 개발자 앱 → 'API 설정(인스타그램 로그인)'에서 '토큰 생성'으로 만든, IG로 시작하는 토큰을 넣어 주세요.");
+  if (platform === 'threads' && /^EAA|^IG/.test(token)) throw new Error('Threads용 토큰이 아닙니다. Meta 개발자 앱의 Threads 사용 사례에서 만든 토큰(TH로 시작)을 넣어 주세요.');
   const me = platform === 'threads'
     ? await graph(ctx, platform, 'GET', '/me', { fields: 'id,username' }, token)
     : await graph(ctx, platform, 'GET', '/me', { fields: 'user_id,username' }, token);

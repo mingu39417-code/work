@@ -31,7 +31,13 @@ function isAutomated(mail) {
   const auto = String(h.get('auto-submitted') ?? 'no').toLowerCase();
   const prec = String(h.get('precedence') ?? '').toLowerCase();
   const from = mail.from?.value?.[0]?.address ?? '';
-  return auto !== 'no' || ['bulk', 'junk', 'list'].includes(prec) || h.has('list-id') || /^(no-?reply|mailer-daemon|postmaster|notifications?)@/i.test(from);
+  // 플랫폼 알림 · 뉴스레터는 고객 문의가 아닙니다(수신거부 머리말은 사람 고객 메일에는 없음).
+  const local = from.split('@')[0] ?? '';
+  const domain = (from.split('@')[1] ?? '').toLowerCase();
+  const AUTO_DOMAINS = ['mail.instagram.com', 'facebookmail.com', 'accounts.google.com', 'notifications.google.com', 'youtube.com', 'linkedin.com', 'mail.notion.so'];
+  return auto !== 'no' || ['bulk', 'junk', 'list'].includes(prec) || h.has('list-id') || h.has('list-unsubscribe')
+    || /^(no-?reply|do-?not-?reply|mailer-daemon|postmaster|notifications?|alerts?|.*recap|digest|newsletter|updates?)$/i.test(local)
+    || AUTO_DOMAINS.some((d) => domain === d || domain.endsWith(`.${d}`));
 }
 
 function saveAttachments(store, mail) {

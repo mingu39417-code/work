@@ -878,6 +878,7 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
         const acct = await connectAccount(ctx, String(b.platform), b.token);
         return send(res, 200, publicAccount(acct));
       } catch (err) {
+        store.log('error', `${String(b.platform) === 'instagram' ? '인스타그램' : String(b.platform)} 연결 실패: ${err.message}`);
         throw new HttpError(400, err.message);
       }
     }

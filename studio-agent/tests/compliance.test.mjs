@@ -283,3 +283,16 @@ test('Gmail 연결이 시간 초과돼도 프로그램이 꺼지지 않습니다
   assert.doesNotThrow(() => c.emit('error', Object.assign(new Error('Socket timeout'), { code: 'ETIMEOUT' })));
   assert.ok(store.all('activity').some((a) => /Socket timeout/.test(a.text)));
 });
+
+test('인스타그램 · 뉴스레터 같은 자동 알림 메일은 새 문의로 만들지 않고, 사람 고객 메일은 그대로 받습니다', async () => {
+  const { ctx } = makeCtx(() => msg([text('x')]));
+  const { store } = ctx;
+  addGmail(store);
+  const mail = (address, extra = new Map()) => ({ from: { value: [{ address, name: 'x' }] }, subject: '안녕하세요', text: '내용', headers: extra });
+  assert.equal(await handleInbound(ctx, mail('stories-recap@mail.instagram.com')), 'ignored');
+  assert.equal(await handleInbound(ctx, mail('security@facebookmail.com')), 'ignored');
+  assert.equal(await handleInbound(ctx, mail('shop@brand.kr', new Map([['list-unsubscribe', '<mailto:u@brand.kr>']]))), 'ignored');
+  assert.equal(await handleInbound(ctx, mail('donotreply@bank.co.kr')), 'ignored');
+  assert.equal(await handleInbound(ctx, mail('info@cafe-momo.kr')), 'inquiry', 'info@ 같은 실제 가게 주소는 문의로 받음');
+  assert.equal(store.find('projects', () => true).length, 1);
+});
