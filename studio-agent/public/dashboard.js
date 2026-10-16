@@ -628,6 +628,7 @@
           <label class="switch"><input type="checkbox" id="ig-auto" ${d.settings?.autoPost !== false ? 'checked' : ''}> 자동 게시</label>
           <span>주 <input id="ig-week" type="number" min="1" max="14" value="${d.settings?.perWeek ?? 3}" style="width:60px;display:inline-block">회, <input id="ig-hour" type="number" min="0" max="23" value="${d.settings?.publishHour ?? 11}" style="width:60px;display:inline-block">시 이후</span>
           <button class="btn small" id="ig-sched">일정 저장</button>
+          <button class="btn small primary" id="ig-now">지금 카드뉴스 올리기</button>
           ${d.settings?.lastAutoPostAt ? `<small class="muted">마지막 자동 게시 ${when(d.settings.lastAutoPostAt)}</small>` : ''}
         </div>
       </div>      <div class="card stack" style="margin-bottom:16px"><h2>홍보 글 만들기</h2>
@@ -659,6 +660,7 @@
       try { await api('/api/social/posts', { method: 'POST', body: { projectId: $('#sp-project').value || null, topic: $('#sp-topic').value } }); toast('카피라이터가 글을 쓰고 있습니다. 끝나면 승인 대기에 올라옵니다'); } catch (err) { toast(err.message); }
     };
     $$('[data-retry]').forEach((b) => (b.onclick = async () => { try { await api(`/api/social/posts/${b.dataset.retry}/retry`, { method: 'POST', body: {} }); toast('다시 올립니다'); route(); } catch (err) { toast(err.message); } }));
+    $('#ig-now').onclick = async () => { try { const r = await api('/api/social/carousel', { method: 'POST', body: {} }); toast(`'${r.title}' 카드뉴스를 만들어 올립니다(1~2분)`); route(); } catch (err) { toast(err.message); } };
     $('#ig-sched').onclick = async () => { await api('/api/social/settings', { method: 'PUT', body: { autoPost: $('#ig-auto').checked, perWeek: Number($('#ig-week').value), publishHour: Number($('#ig-hour').value) } }); toast('일정을 저장했습니다'); route(); };    $('#sync-now').onclick = async () => { await api('/api/social/sync', { method: 'POST', body: {} }); toast('댓글을 확인합니다'); };
   }
 

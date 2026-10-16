@@ -899,6 +899,15 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       enqueue(store, 'social_publish', { postId: post.id });
       return send(res, 200, { ok: true });
     }
+    // 지금 바로 카드뉴스 한 편(아직 안 올린 가장 오래된 글)
+    if (m === 'POST' && p === '/api/social/carousel') {
+      if (!store.findOne('accounts', (a) => a.kind === 'instagram' && a.enabled !== false)) throw new HttpError(409, '먼저 인스타그램을 연결하세요');
+      const next = store.find('blog_posts', (x) => x.status !== 'archived' && !store.findOne('social_posts', (y) => y.blogPostId === x.id && y.status !== 'cancelled')).sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))[0];
+      if (!next) throw new HttpError(409, '올릴 글이 없습니다. 카피라이터가 새 글을 쓰는 중이면 잠시 뒤 다시 눌러 주세요');
+      enqueue(store, 'ig_post', { blogPostId: next.id }, { dedupe: `ig:${next.id}` });
+      store.updateSettings({ social: { lastAutoPostAt: new Date().toISOString() } });
+      return send(res, 200, { ok: true, title: next.title });
+    }
     if (m === 'PUT' && p === '/api/social/settings') {
       const b = await readJson(req);
       const patch = {};
