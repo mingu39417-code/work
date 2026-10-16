@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "온결 스튜디오 블로그 도우미",
-  "version": "1.0.0",
-  "description": "스튜디오 에이전트가 써 둔 글을 네이버 블로그 글쓰기 창에 채워 줍니다. 발행은 직접 누릅니다.",
+  "name": "?④껐 ?ㅽ뒠?붿삤 釉붾줈洹??꾩슦誘?,
+  "version": "1.2.0",
+  "description": "?ㅽ뒠?붿삤 ?먯씠?꾪듃媛 ????湲???ㅼ씠踰?釉붾줈洹?湲?곌린 李쎌뿉 梨꾩썙 以띾땲?? 諛쒗뻾? 吏곸젒 ?꾨쫭?덈떎.",
   "host_permissions": ["http://127.0.0.1:4300/*", "http://localhost:4300/*"],
   "background": { "service_worker": "background.js" },
   "content_scripts": [

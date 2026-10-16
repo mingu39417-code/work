@@ -528,8 +528,32 @@
     };
     $('#view').innerHTML = `
       <div class="page-head"><h1>네이버 블로그</h1><button class="btn small" id="bl-more">글 하나 더 쓰기</button></div>
-      <p class="muted">글은 카피라이터가 전부 씁니다(제목 · 본문 · 표지 이미지 · 태그). <b>발행하러 가기</b>를 누르면 네이버 글쓰기 창이 열리고 내용이 자동으로 채워집니다. 대표님은 네이버에서 <b>발행</b>만 누르세요. 발행하면 20분 안에 자동으로 '발행됨'으로 바뀝니다.</p>
-      <details class="card" style="margin-bottom:16px" ${s.blogId ? '' : 'open'}><summary><strong>처음 한 번만 설정 (5분)</strong></summary>
+      <p class="muted">글은 카피라이터가 전부 씁니다(제목 · 본문 · 표지 이미지 · 태그). <b>WordPress.com</b>은 정한 일정대로 발행까지 완전 자동입니다. <b>네이버</b>는 글쓰기 API가 없어, <b>네이버에 발행하러 가기</b> → 도우미의 '제목 복사 · 본문 복사'로 Ctrl+V 두 번 → <b>발행</b>(20초). 네이버에 발행하면 20분 안에 자동으로 '발행됨'으로 바뀝니다.</p>
+      <div class="card stack" style="margin-bottom:16px">
+        <div class="item-row"><h2>완전 자동 블로그 (WordPress.com)</h2><span class="badge ${d.wp.connected ? (d.wp.status === 'expired' ? 'bad' : 'ok') : ''}">${d.wp.connected ? (d.wp.status === 'expired' ? '연결 끊김' : '자동 발행 중') : '연결 전'}</span></div>
+        <p class="muted" style="margin:0">공식 API로 글 · 이미지 · 태그를 올리고 발행까지 사람 손 없이 합니다. ${d.wp.connected ? `연결된 블로그: <a href="${esc(d.wp.siteUrl)}" target="_blank" rel="noopener">${esc(d.wp.siteUrl)}</a>` : ''}</p>
+        ${d.wp.lastError ? `<p class="error-text">${esc(d.wp.lastError)}</p>` : ''}
+        <details ${d.wp.connected ? '' : 'open'}><summary><strong>처음 한 번만: 계정 · 앱 만들기 (10분)</strong> — 계정은 대표님이 직접 만드셔야 합니다</summary>
+          <ol style="line-height:1.9">
+            <li><a href="https://wordpress.com/start" target="_blank" rel="noopener">wordpress.com/start</a>에서 무료 계정과 사이트를 만듭니다(예: 주소 <code>ongyeol</code>). 유료 요금제는 필요 없습니다.</li>
+            <li><a href="https://developer.wordpress.com/apps/new/" target="_blank" rel="noopener">developer.wordpress.com/apps/new</a>에서 앱을 만듭니다. 칸마다 아래 값을 붙여 넣으세요.
+              <div class="stack" style="gap:4px;margin:6px 0">
+                ${[['Name', '온결 스튜디오 자동 발행'], ['Description', '온결 스튜디오 블로그 글 자동 발행'], ['Website URL', 'http://localhost:4300'], ['Redirect URLs', d.wp.redirectUri], ['Type', 'Web']].map(([k, v]) => `<div class="row" style="gap:6px;align-items:center;flex-wrap:nowrap"><small style="width:110px;flex:0 0 auto">${k}</small><code class="mono" style="flex:1">${esc(v)}</code><button class="btn small" style="flex:0 0 auto" data-copy="${esc(v)}">복사</button></div>`).join('')}
+              </div>
+              'Javascript Origins'는 비워 두고, 사람 확인 문제가 나오면 풀고 <b>Create</b>.</li>
+            <li>만든 앱 화면의 <b>Client ID</b>(숫자)와 <b>Client Secret</b>을 아래에 붙여 넣고 저장:
+              <div class="row" style="align-items:flex-end;margin-top:6px"><div><label>Client ID</label><input id="wp-cid" value="${esc(d.wp.clientId ?? '')}" placeholder="12345"></div><div><label>Client Secret ${d.wp.hasSecret ? '(저장됨 · 바꿀 때만)' : ''}</label><input id="wp-secret" type="password" autocomplete="off"></div><div style="flex:0 0 auto"><button class="btn" id="wp-save">저장</button></div></div></li>
+            <li><b>이 대시보드를 <code>http://localhost:4300/admin</code> 주소로 연 상태에서</b> 아래 <b>연결</b> → WordPress.com 화면에서 <b>Approve</b>. 끝나면 이 화면으로 돌아옵니다.</li>
+          </ol></details>
+        <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn primary" id="wp-connect">${d.wp.connected ? '다시 연결' : '연결'}</button>
+          <label class="switch"><input type="checkbox" id="wp-auto" ${d.wp.autoPublish !== false ? 'checked' : ''}> 자동 발행</label>
+          <span>주 <input id="wp-week" type="number" min="1" max="14" value="${d.wp.perWeek ?? 3}" style="width:60px;display:inline-block">회, <input id="wp-hour" type="number" min="0" max="23" value="${d.wp.publishHour ?? 10}" style="width:60px;display:inline-block">시 이후</span>
+          <button class="btn small" id="wp-sched">일정 저장</button>
+          ${d.wp.lastPublishedAt ? `<small class="muted">마지막 자동 발행 ${when(d.wp.lastPublishedAt)}</small>` : ''}
+        </div>
+      </div>
+      <h2 style="margin:8px 0">네이버 블로그 (반자동: 복사 · 붙여넣기)</h2>      <details class="card" style="margin-bottom:16px" ${s.blogId ? '' : 'open'}><summary><strong>처음 한 번만 설정 (5분)</strong></summary>
         <ol style="line-height:1.8">
           <li>내 블로그 아이디(blog.naver.com/ 뒤의 영문)를 넣고 저장: <input id="bl-id" value="${esc(s.blogId ?? '')}" placeholder="예: ongyeol_studio" style="max-width:220px"> <button class="btn small primary" id="bl-save">저장</button></li>
           <li>크롬 주소창에 <code>chrome://extensions</code> 입력 → 오른쪽 위 <b>개발자 모드</b> 켜기 → <b>압축해제된 확장 프로그램을 로드합니다</b> → 이 폴더 선택:<br><code class="mono">${esc(d.extensionDir)}</code> <button class="btn small" id="bl-copy-dir">경로 복사</button></li>
@@ -544,15 +568,19 @@
         <div class="card" data-post="${x.id}">
           <div class="item-row"><h3>${esc(x.title)}</h3><span class="badge ${ST[x.status]?.[0] ?? ''}">${ST[x.status]?.[1] ?? esc(x.status)}</span></div>
           <small class="muted">${x.kind === 'case' ? `사례 글 · ${esc(x.project ?? '')}` : `주제 글 · ${esc(x.topic)}`} · 작성 ${esc(x.writer ?? '')} · ${when(x.createdAt)}${x.fillReport?.length && !x.fillOk ? ' · <span class="error-text">자동 입력 일부 실패</span>' : ''}</small>
-          ${x.publishedUrl ? `<p><a href="${esc(x.publishedUrl)}" target="_blank" rel="noopener">발행된 글 보기</a></p>` : ''}
-          <details style="margin-top:6px"><summary>미리 보기</summary>${preview(x)}</details>
+          ${x.publishedUrl ? `<p><a href="${esc(x.publishedUrl)}" target="_blank" rel="noopener">네이버 발행 글 보기</a></p>` : ''}
+          ${x.wp?.url ? `<p><a href="${esc(x.wp.url)}" target="_blank" rel="noopener">워드프레스 자동 발행 글 보기</a></p>` : x.wp?.error ? `<p class="error-text">워드프레스 발행 실패: ${esc(x.wp.error)}</p>` : ''}          <details style="margin-top:6px"><summary>미리 보기</summary>${preview(x)}</details>
           <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
-            ${x.status !== 'published' ? `<button class="btn primary" data-arm="${x.id}">발행하러 가기</button>` : ''}
-            ${x.status === 'filled' ? `<button class="btn small" data-done="${x.id}">발행했어요</button>` : ''}
+            ${x.status !== 'published' ? `<button class="btn primary" data-arm="${x.id}">네이버에 발행하러 가기</button>` : ''}
+            ${d.wp.connected && !x.wp?.url ? `<button class="btn small" data-wp="${x.id}">워드프레스에 지금 발행</button>` : ''}            ${x.status === 'filled' ? `<button class="btn small" data-done="${x.id}">발행했어요</button>` : ''}
             <button class="btn small" data-archive="${x.id}">보관</button>
           </div>
         </div>`).join('') || '<div class="card empty">아직 글이 없습니다. 블로그 아이디를 저장하면 카피라이터가 쓰기 시작합니다.</div>'}</div>`;
-    $('#bl-save').onclick = async () => { try { await api('/api/blog/settings', { method: 'PUT', body: { blogId: $('#bl-id').value } }); toast('저장했습니다. 곧 카피라이터가 글을 쓰기 시작합니다'); route(); } catch (err) { toast(err.message); } };
+    $$('[data-copy]').forEach((b) => (b.onclick = async () => { await navigator.clipboard.writeText(b.dataset.copy); toast('복사했습니다'); }));
+    $('#wp-save').onclick = async () => { try { await api('/api/wp/settings', { method: 'PUT', body: { clientId: $('#wp-cid').value, clientSecret: $('#wp-secret').value } }); toast('저장했습니다. 이제 연결을 누르세요'); route(); } catch (err) { toast(err.message); } };
+    $('#wp-connect').onclick = async () => { try { const r = await api('/api/wp/connect', { method: 'POST', body: {} }); location.href = r.url; } catch (err) { toast(err.message); } };
+    $('#wp-sched').onclick = async () => { await api('/api/wp/settings', { method: 'PUT', body: { autoPublish: $('#wp-auto').checked, perWeek: Number($('#wp-week').value), publishHour: Number($('#wp-hour').value) } }); toast('일정을 저장했습니다'); route(); };
+    $$('[data-wp]').forEach((b) => (b.onclick = async () => { try { await api(`/api/wp/publish/${b.dataset.wp}`, { method: 'POST', body: {} }); toast('워드프레스에 올리는 중입니다(1분 안팎)'); } catch (err) { toast(err.message); } }));    $('#bl-save').onclick = async () => { try { await api('/api/blog/settings', { method: 'PUT', body: { blogId: $('#bl-id').value } }); toast('저장했습니다. 곧 카피라이터가 글을 쓰기 시작합니다'); route(); } catch (err) { toast(err.message); } };
     $('#bl-copy-dir').onclick = async () => { await navigator.clipboard.writeText(d.extensionDir); toast('경로를 복사했습니다'); };
     $('#bl-keep-save').onclick = async () => { await api('/api/blog/settings', { method: 'PUT', body: { keepReady: Number($('#bl-keep').value) } }); toast('바꿨습니다'); route(); };
     $('#bl-more').onclick = async () => { await api('/api/blog/compose', { method: 'POST', body: {} }); toast('카피라이터가 새 글을 씁니다(1~2분)'); route(); };

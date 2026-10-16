@@ -10,6 +10,7 @@ import { jsonOf, textOf } from './claude.mjs';
 import { lead, assign, pickDesigner, projectStaff, modelFor, staffBlock, staffLabel } from './staff.mjs';
 import { profileBlock, lessonsBlock } from './prompts.mjs';
 import { keepBlogQueue } from './blog.mjs';
+import { wpDue } from './wordpress.mjs';
 import { calendarLine } from './calendar.mjs';
 
 const KST = 9 * 3600e3;
@@ -197,6 +198,9 @@ export function maintenance(store, now = Date.now()) {
 
   // 네이버 블로그: 발행 대기 글을 미리 써 두고, 대표가 발행했는지 공개 RSS로 확인
   if (s.apiKey) keepBlogQueue(store);
+  // 완전 자동 블로그: 차례가 되면 다음 글을 발행
+  const wpNext = wpDue(store, now);
+  if (wpNext) enqueue(store, 'wp_publish', { postId: wpNext.id }, { dedupe: `wp:${wpNext.id}` });
   const waitingBlog = store.findOne('blog_posts', (x) => x.status === 'filled');
   if (s.blog?.blogId && waitingBlog && now - Date.parse(s.blog?.lastRssCheckAt ?? 0) >= 20 * 60e3 && !store.findOne('jobs', (j) => j.kind === 'blog_check' && ['queued', 'running'].includes(j.status))) {
     store.updateSettings({ blog: { lastRssCheckAt: new Date(now).toISOString() } });

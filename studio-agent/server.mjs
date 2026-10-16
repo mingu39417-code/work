@@ -23,6 +23,7 @@ import { ROLES, DEPARTMENTS, POSITIONS, ASSIGNED, deptOf, defaultPosition, busyS
 import { packageZip, safeName } from './lib/finals.mjs';
 import { PLATFORMS, connectAccount, designJpeg, isPublicUrl, mediaUrl, canPostProject } from './lib/social.mjs';
 import { blogImagePng, blockHtml, writeUrl, ARM_MINUTES } from './lib/blog.mjs';
+import { authorizeUrl, finishOAuth, redirectUri } from './lib/wordpress.mjs';
 import { financeSummary } from './lib/pm.mjs';
 import { DEFAULT_CONTRACT } from './lib/contract.mjs';
 import { ImapFlow } from 'imapflow';
@@ -377,6 +378,15 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
     // ── 공개 API ──
     if (m === 'GET' && p === '/api/public/studio') return send(res, 200, publicSettings(store.settings));
     if (m === 'GET' && p === '/privacy') return send(res, 200, privacyPage(store.settings), { 'Content-Type': 'text/html; charset=utf-8' });
+    if (m === 'GET' && p === '/oauth/wpcom/callback') {
+      if (!authed(req)) throw new HttpError(401, '대시보드에 로그인한 브라우저에서 연결해 주세요');
+      try {
+        await finishOAuth(ctx, { code: url.searchParams.get('code'), state: url.searchParams.get('state') });
+        res.writeHead(302, { Location: '/admin#/blog' }); return res.end();
+      } catch (err) {
+        return send(res, 400, `<meta charset="utf-8"><p>${String(err.message).replace(/</g, '&lt;')}</p><p><a href="/admin#/blog">대시보드로 돌아가기</a></p>`, { 'Content-Type': 'text/html; charset=utf-8' });
+      }
+    }
     if (p.startsWith('/helper/blog/')) {
       const origin = String(req.headers.origin ?? '');
       if (origin && !origin.startsWith('chrome-extension://')) throw new HttpError(403, '허용되지 않은 요청');
@@ -407,7 +417,8 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
         if (!post) throw new HttpError(404, '없음');
         const b = await readJson(req);
         const report = Array.isArray(b.report) ? b.report.map(String).slice(0, 40) : [];
-        store.update('blog_posts', post.id, { status: post.status === 'published' ? 'published' : 'filled', filledAt: new Date().toISOString(), fillOk: b.ok === true, fillReport: report });
+        store.update('blog_posts', post.id, { status: post.status === 'published' ? 'published' : b.ok === true ? 'filled' : 'ready', // 실패하면 발행 대기에 그대로 남김
+          filledAt: new Date().toISOString(), fillOk: b.ok === true, fillReport: report });
         store.updateSettings({ blog: { pending: null } });
         store.log('blog', `네이버 글쓰기 창에 채움${b.ok === true ? '' : '(일부 실패 — 복사 · 붙여넣기로 안내)'}: ${post.title}`);
         return send(res, 200, { ok: true });
@@ -766,12 +777,43 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
     if (m === 'GET' && p === '/api/blog') {
       return send(res, 200, {
         settings: store.settings.blog,
+        wp: (() => { const { clientSecret, token, oauthState, ...w } = store.settings.wp ?? {}; return { ...w, hasSecret: Boolean(clientSecret), connected: Boolean(token), redirectUri: redirectUri(store.settings) }; })(),
         posts: store.all('blog_posts').slice().reverse().slice(0, 60).map((x) => ({ ...x, project: x.projectId ? store.get('projects', x.projectId)?.title ?? null : null, writer: x.writerId ? store.get('staff', x.writerId)?.name ?? null : null })),
         extensionDir: path.join(here, 'naver-helper'),
         composing: Boolean(store.findOne('jobs', (j) => j.kind === 'blog_compose' && ['queued', 'running'].includes(j.status))),
         eligible: store.find('projects', (x) => !canPostProject(store, x) && !store.findOne('blog_posts', (y) => y.projectId === x.id && y.status !== 'archived')).map((x) => ({ id: x.id, title: x.title })),
       });
     }
+    // WordPress.com(완전 자동)
+    if (m === 'PUT' && p === '/api/wp/settings') {
+      const b = await readJson(req);
+      const patch = {};
+      if (typeof b.clientId === 'string' && b.clientId.trim()) {
+        if (!/^\d{3,12}$/.test(b.clientId.trim())) throw new HttpError(400, 'Client ID는 숫자입니다(앱 화면의 Client ID)');
+        patch.clientId = b.clientId.trim();
+      }
+      if (typeof b.clientSecret === 'string' && b.clientSecret.trim()) {
+        if (b.clientSecret.trim().length < 20) throw new HttpError(400, 'Client Secret을 끝까지 복사해 붙여 넣어 주세요');
+        patch.clientSecret = store.vault.encrypt(b.clientSecret.trim());
+      }
+      if (typeof b.autoPublish === 'boolean') patch.autoPublish = b.autoPublish;
+      if (Number.isFinite(b.perWeek)) patch.perWeek = Math.min(14, Math.max(1, Math.round(b.perWeek)));
+      if (Number.isFinite(b.publishHour)) patch.publishHour = Math.min(23, Math.max(0, Math.round(b.publishHour)));
+      store.updateSettings({ wp: patch });
+      return send(res, 200, { ok: true });
+    }
+    if (m === 'POST' && p === '/api/wp/connect') {
+      try { return send(res, 200, { url: authorizeUrl(store) }); } catch (err) { throw new HttpError(409, err.message); }
+    }
+    if (m === 'POST' && (g = /^\/api\/wp\/publish\/(\w+)$/.exec(p))) {
+      const post = store.get('blog_posts', g[1]);
+      if (!post) throw new HttpError(404, '없음');
+      if (!store.settings.wp?.token) throw new HttpError(409, '먼저 WordPress.com을 연결하세요');
+      if (post.wp?.error) store.update('blog_posts', post.id, { wp: null });
+      enqueue(store, 'wp_publish', { postId: post.id }, { dedupe: `wp:${post.id}` });
+      return send(res, 200, { ok: true });
+    }
+
     if (m === 'PUT' && p === '/api/blog/settings') {
       const b = await readJson(req);
       const patch = {};
