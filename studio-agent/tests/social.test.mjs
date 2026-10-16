@@ -112,6 +112,7 @@ test('동의한 작업이 정산되면 글을 쓰고, 승인 후 Threads · 인�
 
 test('외부 접속 주소가 없으면 Threads는 글만, 인스타그램은 건너뜁니다', async () => {
   const { ctx, store, project, fake } = await setup({ publicUrl: 'http://localhost:4300' });
+  ctx.openTunnel = async () => { throw new Error('테스트에서는 터널을 열지 않음'); };
   await runJob(ctx, store.findOne('jobs', (j) => j.kind === 'social_compose'));
   const post = store.findOne('social_posts', (x) => x.projectId === project.id);
   store.updateSettings({ autonomy: { social_post: 'auto' } });
@@ -120,7 +121,7 @@ test('외부 접속 주소가 없으면 Threads는 글만, 인스타그램은 �
   const done = store.get('social_posts', post.id);
   assert.equal(done.status, 'published');
   assert.equal(fake.calls.find((c) => c.path.endsWith('/111/threads')).params.media_type, 'TEXT');
-  assert.match(done.results.instagram.skipped, /외부 접속 주소/);
+  assert.match(done.results.instagram.skipped, /임시 공개 주소/);
   assert.ok(!fake.calls.some((c) => c.path.endsWith('/222/media') && c.method === 'POST'));
 });
 
@@ -201,4 +202,45 @@ test('토큰은 만료 30일 전부터 자동으로 새로 받고, 이미지는 
   const jpg = designJpeg(SVG, 400);
   assert.equal(jpg[0], 0xff); assert.equal(jpg[1], 0xd8, 'JPEG 파일');
   await assert.rejects(connectAccount(ctx, 'threads', 'mypassword123'), /액세스 토큰/);
+});
+test('써 둔 글 → 인스타 카드뉴스: 일정이 되면 카드를 만들고, 공개 주소가 없으면 임시 주소를 열어 묶음으로 게시한 뒤 닫습니다', async () => {
+  const { igDue, composeCarousel, publishSocialPost, mediaJpeg } = await import('../lib/social.mjs');
+  const { maintenance } = await import('../lib/pm.mjs');
+  const { runJob } = await import('../lib/scheduler.mjs');
+  const meta = fakeMeta();
+  const { ctx } = makeCtx(writer, { publicUrl: 'http://localhost:4300', social: { enabled: true }, autonomy: { social_post: 'auto' } });
+  ctx.fetch = meta.fetch;
+  ctx.sleep = async () => {};
+  const { store } = ctx;
+  await connectAccount(ctx, 'instagram', TOKEN);
+  const bp = store.insert('blog_posts', { title: '로고 비용 기준', tags: ['로고디자인'], status: 'ready', blocks: [
+    { type: 'img', source: 'cover' }, { type: 'p', text: '소개 문단입니다.' }, { type: 'h', text: '첫째' }, { type: 'p', text: '내용 하나.' }, { type: 'h', text: '둘째' }, { type: 'p', text: '내용 둘.' },
+  ] });
+  const kst = (h) => Date.parse(`2026-10-16T${String(h - 9).padStart(2, '0')}:30:00Z`);
+  assert.equal(igDue(store, kst(9)), null, '11시 전에는 안 올림');
+  assert.equal(igDue(store, kst(12)).id, bp.id);
+  maintenance(store, kst(12));
+  const job = store.findOne('jobs', (j) => j.kind === 'ig_post' && j.status === 'queued');
+  assert.ok(job);
+  assert.equal(igDue(store, kst(13)), null, '방금 예약했으니 간격 전엔 또 안 함');
+
+  let opened = 0;
+  let closed = 0;
+  ctx.openTunnel = async (serve) => { opened++; return { url: 'https://abc-def.trycloudflare.com', close: async () => { closed++; }, serve }; };
+  await runJob(ctx, job); // 카드 만들기 → 자율 '자동'이면 바로 게시 예약
+  const post = store.findOne('social_posts', (x) => x.blogPostId === bp.id);
+  assert.equal(post.cards.length, 4, '표지 + 소제목 2장 + 마무리');
+  assert.ok(post.igCaption.endsWith(aiLine(store.settings)));
+  assert.equal(mediaJpeg(store, post.cards[0].token)[0], 0xff, '카드 JPEG');
+  await runJob(ctx, store.findOne('jobs', (j) => j.kind === 'social_publish' && j.status === 'queued'));
+  const done = store.get('social_posts', post.id);
+  assert.equal(done.status, 'published');
+  const items = meta.calls.filter((c) => c.path.endsWith('/222/media') && c.method === 'POST' && c.params.is_carousel_item === 'true');
+  assert.equal(items.length, 4);
+  assert.ok(items.every((c, i) => c.params.image_url === `https://abc-def.trycloudflare.com/m/${post.cards[i].token}.jpg`));
+  const parent = meta.calls.find((c) => c.path.endsWith('/222/media') && c.params.media_type === 'CAROUSEL');
+  assert.equal(parent.params.children.split(',').length, 4);
+  assert.equal(opened, 1);
+  assert.equal(closed, 1, '게시 후 임시 주소를 닫음');
+  assert.equal(await composeCarousel(ctx, { blogPostId: bp.id }), null, '같은 글은 다시 올리지 않음');
 });

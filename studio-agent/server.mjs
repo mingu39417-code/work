@@ -21,7 +21,7 @@ import { mailAccount, mailer, GMAIL, accountAuth, normalizeAppPassword, checkApp
 import { startInboxPoller } from './lib/inbox.mjs';
 import { ROLES, DEPARTMENTS, POSITIONS, ASSIGNED, deptOf, defaultPosition, busyStaff, staffLabel, loadOf, capacityOf, managerOf } from './lib/staff.mjs';
 import { packageZip, safeName } from './lib/finals.mjs';
-import { PLATFORMS, connectAccount, designJpeg, isPublicUrl, mediaUrl, canPostProject } from './lib/social.mjs';
+import { PLATFORMS, connectAccount, designJpeg, isPublicUrl, mediaUrl, canPostProject, mediaJpeg } from './lib/social.mjs';
 import { blogImagePng, blockHtml, writeUrl, ARM_MINUTES } from './lib/blog.mjs';
 import { authorizeUrl, finishOAuth, redirectUri } from './lib/wordpress.mjs';
 import { financeSummary } from './lib/pm.mjs';
@@ -426,10 +426,9 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       throw new HttpError(404, '없음');
     }
     if (m === 'GET' && (g = /^\/m\/([\w-]{20,})\.jpg$/.exec(p))) {
-      const post = store.findOne('social_posts', (x) => x.mediaToken === g[1] && ['pending', 'queued', 'published', 'partial', 'failed'].includes(x.status));
-      const d = post?.designId && store.get('designs', post.designId);
-      if (!d || d.format !== 'svg') throw new HttpError(404, '없음');
-      return send(res, 200, designJpeg(d.code), { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400' });
+      const jpg = mediaJpeg(store, g[1]);
+      if (!jpg) throw new HttpError(404, '없음');
+      return send(res, 200, jpg, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400' });
     }
     if (m === 'GET' && (g = /^\/u\/([\w-]+)$/.exec(p))) return serveFile(res, path.join(PUBLIC, 'unsubscribe.html'));
     if (m === 'POST' && p === '/api/public/unsubscribe') {
@@ -580,7 +579,7 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       req.on('close', () => sseClients.delete(res));
       return;
     }
-    if (m === 'GET' && p === '/api/meta') return send(res, 200, { statuses: STATUSES, autonomy: AUTONOMY_LABELS, models: Object.fromEntries(Object.entries(MODELS).map(([k, v]) => [k, v.label])), outreachBasis: OUTREACH_BASIS, departments: DEPARTMENTS, positions: POSITIONS, roles: ROLES, features: { social: Boolean(store.settings.social?.enabled), blog: store.settings.blog?.enabled !== false } });
+    if (m === 'GET' && p === '/api/meta') return send(res, 200, { statuses: STATUSES, autonomy: AUTONOMY_LABELS, models: Object.fromEntries(Object.entries(MODELS).map(([k, v]) => [k, v.label])), outreachBasis: OUTREACH_BASIS, departments: DEPARTMENTS, positions: POSITIONS, roles: ROLES, features: { social: Boolean(store.settings.social?.enabled), threads: Boolean(store.settings.social?.threads), wp: Boolean(store.settings.wp?.enabled), blog: store.settings.blog?.enabled !== false } });
     if (m === 'GET' && p === '/api/overview') return send(res, 200, overview(ctx));
 
     if (m === 'POST' && p === '/api/agent/pause') { store.updateSettings({ paused: true }); store.log('agent', '대표가 에이전트를 일시정지했습니다'); return send(res, 200, { ok: true }); }
@@ -898,6 +897,15 @@ export function createApp({ dataDir, llmFactory, schedulerInterval = 3000, start
       store.update('social_posts', post.id, { status: 'queued' });
       enqueue(store, 'social_publish', { postId: post.id });
       return send(res, 200, { ok: true });
+    }
+    if (m === 'PUT' && p === '/api/social/settings') {
+      const b = await readJson(req);
+      const patch = {};
+      if (typeof b.autoPost === 'boolean') patch.autoPost = b.autoPost;
+      if (Number.isFinite(b.perWeek)) patch.perWeek = Math.min(14, Math.max(1, Math.round(b.perWeek)));
+      if (Number.isFinite(b.publishHour)) patch.publishHour = Math.min(23, Math.max(0, Math.round(b.publishHour)));
+      store.updateSettings({ social: patch });
+      return send(res, 200, store.settings.social);
     }
     if (m === 'POST' && p === '/api/social/sync') {
       if (!store.findOne('jobs', (j) => j.kind === 'social_sync' && ['queued', 'running'].includes(j.status))) enqueue(store, 'social_sync', {});

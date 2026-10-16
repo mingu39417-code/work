@@ -25,7 +25,7 @@ function setup(meta = fakeWp()) {
   const { ctx } = makeCtx(() => msg([text('x')]));
   ctx.fetch = meta.fetch;
   const { store } = ctx;
-  store.updateSettings({ wp: { clientId: '12345', clientSecret: store.vault.encrypt('S'.repeat(64)) } });
+  store.updateSettings({ wp: { enabled: true, clientId: '12345', clientSecret: store.vault.encrypt('S'.repeat(64)) } });
   return { ctx, store, meta };
 }
 

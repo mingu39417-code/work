@@ -528,8 +528,8 @@
     };
     $('#view').innerHTML = `
       <div class="page-head"><h1>네이버 블로그</h1><button class="btn small" id="bl-more">글 하나 더 쓰기</button></div>
-      <p class="muted">글은 카피라이터가 전부 씁니다(제목 · 본문 · 표지 이미지 · 태그). <b>WordPress.com</b>은 정한 일정대로 발행까지 완전 자동입니다. <b>네이버</b>는 글쓰기 API가 없어, <b>네이버에 발행하러 가기</b> → 도우미의 '제목 복사 · 본문 복사'로 Ctrl+V 두 번 → <b>발행</b>(20초). 네이버에 발행하면 20분 안에 자동으로 '발행됨'으로 바뀝니다.</p>
-      <div class="card stack" style="margin-bottom:16px">
+      <p class="muted">글은 카피라이터가 전부 씁니다(제목 · 본문 · 표지 이미지 · 태그). 써 둔 글은 <a href="#/social">인스타그램</a>에 카드뉴스로 정한 일정대로 자동 게시됩니다. <b>네이버</b>는 글쓰기 API가 없어, <b>네이버에 발행하러 가기</b> → 도우미의 '제목 복사 · 본문 복사'로 Ctrl+V 두 번 → <b>발행</b>(20초). 네이버에 발행하면 20분 안에 자동으로 '발행됨'으로 바뀝니다.</p>
+      <div class="card stack" style="margin-bottom:16px;${META.features?.wp ? '' : 'display:none'}">
         <div class="item-row"><h2>완전 자동 블로그 (WordPress.com)</h2><span class="badge ${d.wp.connected ? (d.wp.status === 'expired' ? 'bad' : 'ok') : ''}">${d.wp.connected ? (d.wp.status === 'expired' ? '연결 끊김' : '자동 발행 중') : '연결 전'}</span></div>
         <p class="muted" style="margin:0">공식 API로 글 · 이미지 · 태그를 올리고 발행까지 사람 손 없이 합니다. ${d.wp.connected ? `연결된 블로그: <a href="${esc(d.wp.siteUrl)}" target="_blank" rel="noopener">${esc(d.wp.siteUrl)}</a>` : ''}</p>
         ${d.wp.lastError ? `<p class="error-text">${esc(d.wp.lastError)}</p>` : ''}
@@ -610,7 +610,7 @@
       </div>`;
     };
     $('#view').innerHTML = `
-      <div class="page-head"><h1>SNS 영업</h1><button class="btn small" id="sync-now">지금 댓글 확인</button></div>
+      <div class="page-head"><h1>인스타그램 영업</h1><button class="btn small" id="sync-now">지금 댓글 확인</button></div>
       <p class="muted">Meta 공식 API로만 연결합니다. 고객이 동의한 작업만 소개하고, 모든 글과 답글에 AI 활용 표시가 붙습니다. 먼저 남에게 댓글 · DM을 보내는 영업은 하지 않습니다(약관 · 정보통신망법).</p>
       <details class="card" style="margin-bottom:16px"><summary><strong>처음 연결하는 방법 (10~20분, 한 번만)</strong></summary>
         <ol class="pre" style="white-space:normal;line-height:1.7">
@@ -621,8 +621,16 @@
           <li>내 계정에만 쓰는 앱이라 Meta 앱 심사는 필요 없습니다. 토큰은 암호화해 이 컴퓨터에만 저장하고 60일마다 자동으로 새로 받습니다. 토큰을 채팅이나 메신저로 보내지 마세요.</li>
         </ol></details>
       ${d.publicUrlOk ? '' : `<div class="card alert" style="margin-bottom:16px"><strong>이미지 게시에는 외부 접속 주소가 필요합니다.</strong> Meta가 이미지를 직접 내려받는데, 지금 주소(${esc(d.publicUrl)})는 이 컴퓨터 안에서만 열립니다. 그동안 Threads는 글만 올리고, 인스타그램(이미지 필수)은 건너뜁니다. 외부에서 열리는 https 주소를 <a href="#/settings">설정</a>의 '공개 주소'에 넣으면 이미지도 올라갑니다.</div>`}
-      <div class="grid2" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:16px">${card('threads', 'Threads')}${card('instagram', '인스타그램')}</div>
-      <div class="card stack" style="margin-bottom:16px"><h2>홍보 글 만들기</h2>
+      <div class="grid2" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:16px">${META.features?.threads ? card('threads', 'Threads') : ''}${card('instagram', '인스타그램')}</div>
+      <div class="card stack" style="margin-bottom:16px"><h2>자동 게시 일정 (카드뉴스)</h2>
+        <p class="muted" style="margin:0">카피라이터가 써 둔 글을 여러 장 넘기는 카드뉴스로 만들어, 정한 횟수만큼 자동으로 올립니다. 이미지는 게시하는 1분 동안만 임시 주소로 열고 바로 닫습니다(대시보드는 공개되지 않음). 올리기 전 확인은 <a href="#/settings">설정</a>의 자율 수준 'SNS 게시'로 정합니다(자동 / 승인 후).</p>
+        <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">
+          <label class="switch"><input type="checkbox" id="ig-auto" ${d.settings?.autoPost !== false ? 'checked' : ''}> 자동 게시</label>
+          <span>주 <input id="ig-week" type="number" min="1" max="14" value="${d.settings?.perWeek ?? 3}" style="width:60px;display:inline-block">회, <input id="ig-hour" type="number" min="0" max="23" value="${d.settings?.publishHour ?? 11}" style="width:60px;display:inline-block">시 이후</span>
+          <button class="btn small" id="ig-sched">일정 저장</button>
+          ${d.settings?.lastAutoPostAt ? `<small class="muted">마지막 자동 게시 ${when(d.settings.lastAutoPostAt)}</small>` : ''}
+        </div>
+      </div>      <div class="card stack" style="margin-bottom:16px"><h2>홍보 글 만들기</h2>
         <p class="muted">작업이 정산되면(고객 동의 시) 자동으로 만들어집니다. 직접 만들 수도 있습니다. 만든 글은 <a href="#/approvals">승인 대기</a>에서 확인 후 올라갑니다(설정에서 자동으로 바꿀 수 있음).</p>
         <div class="row" style="align-items:flex-end">
           <div><label>소개할 작업 (고객 동의 · 정산 완료)</label><select id="sp-project"><option value="">— 작업 없이 주제로 쓰기 —</option>${d.eligible.map((p) => `<option value="${p.id}">${esc(p.title)}${p.named ? '' : ' (업체명 비공개)'}</option>`).join('')}</select></div>
@@ -651,7 +659,7 @@
       try { await api('/api/social/posts', { method: 'POST', body: { projectId: $('#sp-project').value || null, topic: $('#sp-topic').value } }); toast('카피라이터가 글을 쓰고 있습니다. 끝나면 승인 대기에 올라옵니다'); } catch (err) { toast(err.message); }
     };
     $$('[data-retry]').forEach((b) => (b.onclick = async () => { try { await api(`/api/social/posts/${b.dataset.retry}/retry`, { method: 'POST', body: {} }); toast('다시 올립니다'); route(); } catch (err) { toast(err.message); } }));
-    $('#sync-now').onclick = async () => { await api('/api/social/sync', { method: 'POST', body: {} }); toast('댓글을 확인합니다'); };
+    $('#ig-sched').onclick = async () => { await api('/api/social/settings', { method: 'PUT', body: { autoPost: $('#ig-auto').checked, perWeek: Number($('#ig-week').value), publishHour: Number($('#ig-hour').value) } }); toast('일정을 저장했습니다'); route(); };    $('#sync-now').onclick = async () => { await api('/api/social/sync', { method: 'POST', body: {} }); toast('댓글을 확인합니다'); };
   }
 
   // ── 계정 ──

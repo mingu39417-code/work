@@ -117,5 +117,5 @@ test('서버: 확장 프로그램 주소는 대기 중인 글만 넘기고, 다�
   assert.equal(store.get('blog_posts', post.id).status, 'filled');
   assert.equal((await (await fetch(`${base}/helper/blog/pending`)).json()).post, null, '한 번 채우면 대기 해제');
   const meta = await (await call('/api/meta')).json();
-  assert.deepEqual(meta.features, { social: false, blog: true });
+  assert.deepEqual(meta.features, { social: false, threads: false, wp: false, blog: true });
 });

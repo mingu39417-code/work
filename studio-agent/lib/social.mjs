@@ -10,6 +10,8 @@ import { renderPng } from './finals.mjs';
 import { enqueue, gated, short, studioName } from './actions.mjs';
 import { lead, modelFor, staffBlock } from './staff.mjs';
 import { jsonOf } from './claude.mjs';
+import { openMediaTunnel } from './mediatunnel.mjs';
+import { carouselCards, carouselCaption } from './igcards.mjs';
 
 export const PLATFORMS = {
   threads: { label: 'Threads', base: 'https://graph.threads.net/v1.0', refresh: 'https://graph.threads.net/refresh_access_token', grant: 'th_refresh_token', textLimit: 500 },
@@ -249,9 +251,23 @@ export async function publishSocialPost(ctx, { postId }) {
     const why = canPostProject(store, store.get('projects', post.projectId));
     if (why) { store.update('social_posts', post.id, { status: 'cancelled', error: why }); return; }
   }
-  const imageUrl = post.mediaToken && isPublicUrl(s.publicUrl) ? mediaUrl(s, post) : null;
+  // 이미지 주소: 공개 주소가 있으면 그대로, 없으면 게시하는 동안만 이미지 전용 임시 주소(cloudflared)를 엽니다.
+  const needsImage = Boolean(post.mediaToken || post.cards?.length);
+  let tunnel = null;
+  let base = isPublicUrl(s.publicUrl) ? String(s.publicUrl).replace(/\/+$/, '') : null;
+  if (needsImage && !base && post.platforms.includes('instagram')) {
+    try {
+      tunnel = await (ctx.openTunnel ?? openMediaTunnel)((token) => mediaJpeg(store, token));
+      base = tunnel.url;
+      store.log('social', `이미지 임시 공개 주소를 열었습니다(게시 후 닫음): ${tunnel.url}`);
+    } catch (err) {
+      store.log('error', `이미지 임시 공개 주소 실패: ${err.message}`);
+    }
+  }
+  const imageUrl = post.mediaToken && base ? `${base}/m/${post.mediaToken}.jpg` : null;
+  const cardUrls = (post.cards ?? []).map((c) => (base ? `${base}/m/${c.token}.jpg` : null));
   const results = { ...(post.results ?? {}) };
-  for (const platform of post.platforms) {
+  try {  for (const platform of post.platforms) {
     if (results[platform]?.id) continue; // 이미 올라간 곳은 다시 올리지 않습니다
     const acct = socialAccount(store, platform);
     if (!acct) { results[platform] = { error: '계정이 연결되어 있지 않습니다' }; continue; }
@@ -263,15 +279,27 @@ export async function publishSocialPost(ctx, { postId }) {
         await waitReady(ctx, platform, c.id, token);
         id = (await graph(ctx, platform, 'POST', `/${acct.userId}/threads_publish`, { creation_id: c.id }, token)).id;
       } else {
+        if (cardUrls.length && cardUrls.every(Boolean)) {
+          // 카드뉴스(여러 장): 장마다 컨테이너 → 묶음 컨테이너 → 발행
+          const children = [];
+          for (const u of cardUrls) {
+            const ch = await graph(ctx, platform, 'POST', `/${acct.userId}/media`, { image_url: u, is_carousel_item: 'true' }, token);
+            await waitReady(ctx, platform, ch.id, token);
+            children.push(ch.id);
+          }
+          const c = await graph(ctx, platform, 'POST', `/${acct.userId}/media`, { media_type: 'CAROUSEL', children: children.join(','), caption: post.igCaption }, token);
+          await waitReady(ctx, platform, c.id, token);
+          id = (await graph(ctx, platform, 'POST', `/${acct.userId}/media_publish`, { creation_id: c.id }, token)).id;
+        } else {
         if (!imageUrl) {
-          results[platform] = { skipped: post.mediaToken ? "인스타그램은 이미지가 꼭 필요한데, 설정의 '외부 접속 주소'가 인터넷에서 열리는 https 주소가 아닙니다" : '이미지가 없는 글이라 인스타그램에는 올리지 않습니다' };
+          results[platform] = { skipped: needsImage ? '이미지 임시 공개 주소를 열지 못했습니다(cloudflared 확인 필요)' : '이미지가 없는 글이라 인스타그램에는 올리지 않습니다' };
           continue;
         }
         const c = await graph(ctx, platform, 'POST', `/${acct.userId}/media`, { image_url: imageUrl, caption: post.igCaption }, token);
         await waitReady(ctx, platform, c.id, token);
         id = (await graph(ctx, platform, 'POST', `/${acct.userId}/media_publish`, { creation_id: c.id }, token)).id;
-      }
-      let permalink = null;
+        }
+      }      let permalink = null;
       try { permalink = (await graph(ctx, platform, 'GET', `/${id}`, { fields: 'permalink' }, token)).permalink ?? null; } catch { /* 링크는 없어도 됩니다 */ }
       results[platform] = { id, permalink, at: new Date().toISOString() };
       store.log('social', `${PLATFORMS[platform].label}에 게시${permalink ? `: ${permalink}` : ''}`, { projectId: post.projectId });
@@ -279,6 +307,9 @@ export async function publishSocialPost(ctx, { postId }) {
       results[platform] = { error: err.message };
       store.log('error', `${PLATFORMS[platform].label} 게시 실패: ${err.message}`, { projectId: post.projectId });
     }
+  }
+  } finally {
+    if (tunnel) { await tunnel.close(); store.log('social', '이미지 임시 공개 주소를 닫았습니다'); }
   }
   const done = post.platforms.filter((p) => results[p]?.id).length;
   const failed = post.platforms.filter((p) => results[p]?.error);
@@ -418,4 +449,44 @@ export async function sendSocialReply(ctx, commentId) {
     store.log('error', `${PLATFORMS[c.platform].label} 답글 실패: ${err.message}`);
     return `실패: ${err.message}`;
   }
+}
+// ── 공개 이미지(JPEG): 확정 시안(포트폴리오 글) 또는 카드뉴스 한 장 ──────
+export function mediaJpeg(store, token) {
+  const post = store.findOne('social_posts', (x) => ['pending', 'queued', 'published', 'partial', 'failed'].includes(x.status) && (x.mediaToken === token || (x.cards ?? []).some((c) => c.token === token)));
+  if (!post) return null;
+  const card = (post.cards ?? []).find((c) => c.token === token);
+  if (card) return designJpeg(card.svg);
+  const d = post.designId && store.get('designs', post.designId);
+  return d && d.format === 'svg' ? designJpeg(d.code) : null;
+}
+
+// ── 써 둔 글 → 인스타그램 카드뉴스 (정해진 일정에 자동) ───────────────────
+export async function composeCarousel(ctx, { blogPostId }) {
+  const { store } = ctx;
+  const s = store.settings;
+  const bp = store.get('blog_posts', blogPostId);
+  if (!bp || store.findOne('social_posts', (x) => x.blogPostId === bp.id && x.status !== 'cancelled')) return null;
+  const platforms = ['instagram'].filter((p) => socialAccount(store, p));
+  if (!platforms.length) return null;
+  const post = store.insert('social_posts', {
+    source: 'blog', blogPostId: bp.id, projectId: bp.projectId ?? null, topic: bp.title, platforms,
+    igCaption: carouselCaption(s, bp), threadsText: '', cards: carouselCards(s, bp), status: 'pending', results: {},
+  });
+  store.log('social', `인스타 카드뉴스 준비: ${bp.title} (${post.cards.length}장)`);
+  await gated(ctx, 'social_post', { type: 'social_publish', postId: post.id, projectId: bp.projectId ?? null, igCaption: post.igCaption, threadsText: '', cardCount: post.cards.length, blogPostId: bp.id }, `인스타 카드뉴스 ${post.cards.length}장 — ${short(bp.title, 60)}`);
+  return post;
+}
+
+// 주 N회 · 정한 시각 이후, 아직 안 올린 글 하나(정기 점검에서 호출)
+export function igDue(store, now = Date.now()) {
+  const so = store.settings.social ?? {};
+  if (!so.enabled || so.autoPost === false) return null;
+  const acct = socialAccount(store, 'instagram');
+  if (!acct || acct.status === 'expired') return null;
+  const perWeek = Math.min(14, Math.max(1, Number(so.perWeek) || 3));
+  if (so.lastAutoPostAt && now - Date.parse(so.lastAutoPostAt) < (7 / perWeek) * 864e5 * 0.9) return null;
+  if (new Date(now + 9 * 3600e3).getUTCHours() < (Number(so.publishHour) || 11)) return null;
+  if (store.findOne('jobs', (j) => ['ig_post', 'social_publish'].includes(j.kind) && ['queued', 'running'].includes(j.status))) return null;
+  if (store.findOne('social_posts', (x) => x.source === 'blog' && x.status === 'pending')) return null; // 승인 대기 중이면 기다림
+  return store.find('blog_posts', (x) => x.status !== 'archived' && !store.findOne('social_posts', (y) => y.blogPostId === x.id && y.status !== 'cancelled')).sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))[0] ?? null;
 }

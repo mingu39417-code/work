@@ -11,6 +11,7 @@ import { lead, assign, pickDesigner, projectStaff, modelFor, staffBlock, staffLa
 import { profileBlock, lessonsBlock } from './prompts.mjs';
 import { keepBlogQueue } from './blog.mjs';
 import { wpDue } from './wordpress.mjs';
+import { igDue } from './social.mjs';
 import { calendarLine } from './calendar.mjs';
 
 const KST = 9 * 3600e3;
@@ -199,7 +200,10 @@ export function maintenance(store, now = Date.now()) {
   // 네이버 블로그: 발행 대기 글을 미리 써 두고, 대표가 발행했는지 공개 RSS로 확인
   if (s.apiKey) keepBlogQueue(store);
   // 완전 자동 블로그: 차례가 되면 다음 글을 발행
-  const wpNext = wpDue(store, now);
+  // 인스타그램 카드뉴스: 차례가 되면 다음 글을 카드로 만들어 게시
+  const igNext = igDue(store, now);
+  if (igNext) { store.updateSettings({ social: { lastAutoPostAt: new Date(now).toISOString() } }); enqueue(store, 'ig_post', { blogPostId: igNext.id }, { dedupe: `ig:${igNext.id}` }); }
+  const wpNext = s.wp?.enabled ? wpDue(store, now) : null;
   if (wpNext) enqueue(store, 'wp_publish', { postId: wpNext.id }, { dedupe: `wp:${wpNext.id}` });
   const waitingBlog = store.findOne('blog_posts', (x) => x.status === 'filled');
   if (s.blog?.blogId && waitingBlog && now - Date.parse(s.blog?.lastRssCheckAt ?? 0) >= 20 * 60e3 && !store.findOne('jobs', (j) => j.kind === 'blog_check' && ['queued', 'running'].includes(j.status))) {

@@ -151,7 +151,8 @@ Rules: only facts given above; no invented clients, numbers, reviews or awards; 
 // 발행 대기 글을 늘 몇 개 준비해 둡니다(정기 점검에서 호출).
 export function keepBlogQueue(store) {
   const b = store.settings.blog ?? {};
-  if (b.enabled === false || (!b.blogId && !store.settings.wp?.token)) return;
+  const ig = store.settings.social?.enabled && store.findOne('accounts', (a) => a.kind === 'instagram' && a.enabled !== false);
+  if (b.enabled === false || (!b.blogId && !store.settings.wp?.token && !ig)) return;
   const ready = store.find('blog_posts', (x) => x.status === 'ready').length;
   const busy = store.findOne('jobs', (j) => j.kind === 'blog_compose' && ['queued', 'running'].includes(j.status));
   if (!busy && ready < Math.max(1, Number(b.keepReady) || 3)) enqueue(store, 'blog_compose', {});

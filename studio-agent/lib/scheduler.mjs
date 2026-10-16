@@ -4,7 +4,7 @@
 import { runAccountManager, runSales } from './agent.mjs';
 import { runDesignJob } from './designer.mjs';
 import { runFinalFiles } from './finals.mjs';
-import { composeSocialPost, publishSocialPost, syncSocial } from './social.mjs';
+import { composeSocialPost, publishSocialPost, syncSocial, composeCarousel } from './social.mjs';
 import { composeBlogPost, checkPublished } from './blog.mjs';
 import { publishToWordPress } from './wordpress.mjs';
 import { runKickoff, runStandup, runRetro, maintenance } from './pm.mjs';
@@ -20,6 +20,7 @@ const HANDLERS = {
   social_compose: (ctx, p) => composeSocialPost(ctx, p),
   social_publish: (ctx, p) => publishSocialPost(ctx, p),
   social_sync: (ctx) => syncSocial(ctx),
+  ig_post: (ctx, p) => composeCarousel(ctx, p),
   blog_compose: (ctx, p) => composeBlogPost(ctx, p),
   blog_check: (ctx) => checkPublished(ctx),
   wp_publish: (ctx, p) => publishToWordPress(ctx, p),
